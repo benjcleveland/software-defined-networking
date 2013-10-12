@@ -21,15 +21,33 @@ class LearningSwitch (EventMixin):
     # Switch we'll be adding L2 learning switch capabilities to
     self.connection= connection
     self.listenTo(connection)
-    
+
+    self.mac = {}
+    self.count = 0
 
   def _handle_PacketIn (self, event):
 
     # parsing the input packet
     packet = event.parse()
-    
+
     # updating out mac to port mapping
+    log.debug("got packet %s %s %s" % (str(packet.src), str(packet.dst), str(event.port)))
+    self.mac[packet.src] = event.port
+
+    if packet.dst in self.mac:
+        # install a flow table rule
+        self.count += 1
+        log.debug("installing a new flow table rule" + str(self.count))
+        fm = of.ofp_flow_mod()
+        fm.match = of.ofp_match.from_packet(packet)
+        fm.idle_timeout = 30
+        fm.hard_timeout = 60
+        fm.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
     
+        # forward the packet to the destination
+        self.connection.send(fm)
+        return
+
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
       # Drop IPv6 packets
@@ -57,8 +75,6 @@ class learning_switch (EventMixin):
     log.debug("Connection %s" % (event.connection,))
     LearningSwitch(event.connection)
 
-
 def launch ():
   #Starts an L2 learning switch.
   core.registerNew(learning_switch)
-
