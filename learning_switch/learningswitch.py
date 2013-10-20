@@ -40,8 +40,9 @@ class LearningSwitch (EventMixin):
         log.debug("installing a new flow table rule" + str(self.count))
         fm = of.ofp_flow_mod()
         fm.match = of.ofp_match.from_packet(packet)
-        fm.idle_timeout = 30
-        fm.hard_timeout = 60
+        fm.idle_timeout = IDLE_TIMEOUT
+        fm.hard_timeout = HARD_TIMEOUT
+        fm.buffer_id = event.ofp.buffer_id
         fm.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
     
         # forward the packet to the destination
