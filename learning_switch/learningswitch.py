@@ -5,6 +5,8 @@ This is an L2 learning switch written directly against the OpenFlow library.
 It is derived from POX l2_learning.py only for IPv4.
 """
 
+# TODO - cleanup code and whatnot
+
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import *
@@ -17,6 +19,7 @@ from pox.lib.addresses import EthAddr
 
 log = core.getLogger()
 
+# todo - add an arp and mac timeout
 HARD_TIMEOUT = 30
 IDLE_TIMEOUT = 30
 
@@ -43,7 +46,7 @@ class LearningSwitch (EventMixin):
     log.debug("got packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
     self.mac[packet.src] = event.port
 
-    # handle arp?
+    # handle arp? - this is derived/inspired from the l2_learning.py from POX
     if isinstance(packet.next, arp):
         log.debug("we got an arp packet!!!" + str(event.connection.dpid))
 
@@ -68,18 +71,24 @@ class LearningSwitch (EventMixin):
                 arp_res.protodst = arp_req.protosrc
                 arp_res.protosrc = arp_req.protodst
                 arp_res.hwsrc = self.arptable[arp_req.protodst][1]
+
+                # create an ethernet package that contains the arp response we created above
                 e = ethernet(type=packet.type, src=dpid_to_mac(event.connection.dpid), dst=arp_req.hwsrc)
                 e.set_payload(arp_res)
                 log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port,
                  str(arp_res.protosrc)))
+
+                # send the message
                 msg = of.ofp_packet_out()
                 msg.data = e.pack()
                 msg.actions.append(of.ofp_action_output(port =
                                                         of.OFPP_IN_PORT))
                 msg.in_port = event.port
                 event.connection.send(msg)
+
                 return
 
+        # flood the package
         log.debug("flooding arp packet!" + str(self.arptable))
         msg = of.ofp_packet_out()
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
