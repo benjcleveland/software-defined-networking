@@ -67,7 +67,9 @@ class LearningSwitch (EventMixin):
 
         # see if we can handle the arp request (we know the dst and it hasn't expired)
         if arp_req.opcode == arp.REQUEST and arp_req.protodst in self.arptable and self.arptable[arp_req.protodst][2] > time.time():
+            # we can respond to the ARP request
             log.debug("responding to arp request...")
+
             # create the arp response packet
             arp_res = arp()
             arp_res.hwtype = arp_req.hwtype
@@ -86,7 +88,7 @@ class LearningSwitch (EventMixin):
             log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port,
              str(arp_res.protosrc)))
 
-            # send the message
+            # send the ARP response
             msg = of.ofp_packet_out()
             msg.data = e.pack()
             msg.actions.append(of.ofp_action_output(port =
@@ -102,7 +104,9 @@ class LearningSwitch (EventMixin):
     return 
 
   def flood_packet(self, event):
-    # flood the packet to all links
+    '''
+    Flood the given event to all links
+    '''
     msg = of.ofp_packet_out()
     msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
     msg.buffer_id = event.ofp.buffer_id
@@ -111,42 +115,35 @@ class LearningSwitch (EventMixin):
 
     return
 
+  def add_flow(self, event, source, destination, dst_port, data = None):
+    '''
+    Add a new flow from the source to the destination
+    '''
+    fm = of.ofp_flow_mod()
+    fm.match.dl_dst = destination
+    fm.match.dl_src = source
+    fm.idle_timeout = IDLE_TIMEOUT
+    fm.hard_timeout = HARD_TIMEOUT
+
+    if data:
+        # forward the packet to the destination
+        fm.data = data
+
+    #fm.buffer_id = event.ofp.buffer_id
+    fm.actions.append(of.ofp_action_output(port = dst_port))
+    log.debug("installing a new flow for %s to %s.%i " % (source, destination, dst_port) + str(self.count))
+    self.connection.send(fm)
+
   def _handle_PacketIn (self, event):
+    '''
+    handles new packages that are sent to the controller
+    '''
     # parsing the input packet
     packet = event.parse()
 
     # updating out mac to port mapping
-    log.debug("got packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
+    log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
     self.mac[packet.src] = event.port
-
-    # see if this is an ARP packet
-    if isinstance(packet.next, arp):
-        return self.handle_arp(event, packet)
-    
-    # update the ARP table
-    self.arptable[packet.next.srcip] = (event.port, packet.src, time.time() + ARP_TIMEOUT)
-
-    if packet.dst in self.mac:
-        # we know the destination port, install a flow table rule
-        self.count += 1
-        log.debug("installing a new flow table rule for %s.%i to %s.%i " % (packet.src, event.port, packet.dst, self.mac[packet.dst]) + str(self.count))
-        # todo handle the case where the source and destination are the same...
-        fm = of.ofp_flow_mod()
-        #fm.match = of.ofp_match.from_packet(packet, event.port)
-        #print fm.match
-        fm.match.dl_dst = packet.dst
-        fm.match.in_port = event.port
-        #fm.flags = of.OFPFF_CHECK_OVERLAP
-
-        #print fm.match
-        fm.idle_timeout = IDLE_TIMEOUT
-        fm.hard_timeout = HARD_TIMEOUT
-        fm.buffer_id = event.ofp.buffer_id
-        fm.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
-        #fm.data = event.ofp
-        # forward the packet to the destination
-        self.connection.send(fm)
-        return
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
@@ -158,6 +155,26 @@ class LearningSwitch (EventMixin):
       msg.in_port = event.port
       self.connection.send(msg)
       return
+
+    # see if this is an ARP packet
+    if isinstance(packet.next, arp):
+        return self.handle_arp(event, packet)
+    
+    # update the ARP table
+    self.arptable[packet.next.srcip] = (event.port, packet.src, time.time() + ARP_TIMEOUT)
+
+    if packet.dst in self.mac:
+        # we know the destination port, install a flow table rule
+        self.count += 1 # keep track of the flow count - useful for debugging
+        # TODO handle the case where the source and destination are the same...
+
+        # create a new flow for this source and destination
+        self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
+
+        # make a flow in the other direction
+        self.add_flow(event, packet.dst, packet.src, event.port)
+
+        return
 
     log.debug("Port for %s unknown -- flooding" % (packet.dst,))
     self.flood_packet(event)
