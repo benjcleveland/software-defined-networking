@@ -85,14 +85,12 @@ class LearningSwitch (EventMixin):
             # create an ethernet package that contains the arp response we created above
             e = ethernet(type=packet.type, src=dpid_to_mac(event.connection.dpid), dst=arp_req.hwsrc)
             e.set_payload(arp_res)
-            log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port,
-             str(arp_res.protosrc)))
+            log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
 
             # send the ARP response
             msg = of.ofp_packet_out()
             msg.data = e.pack()
-            msg.actions.append(of.ofp_action_output(port =
-                                                    of.OFPP_IN_PORT))
+            msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
             msg.in_port = event.port
             event.connection.send(msg)
 
@@ -112,8 +110,6 @@ class LearningSwitch (EventMixin):
     msg.buffer_id = event.ofp.buffer_id
     msg.in_port = event.port
     self.connection.send(msg)
-
-    return
 
   def add_flow(self, event, source, destination, dst_port, data = None):
     '''
