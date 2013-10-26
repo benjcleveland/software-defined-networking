@@ -26,7 +26,7 @@ log = core.getLogger()
 
 # todo - add an arp and mac timeout
 HARD_TIMEOUT = 360
-IDLE_TIMEOUT = 60
+IDLE_TIMEOUT = 30
 
 ARP_TIMEOUT = 360 # timeout for entries in the ARP table
 
