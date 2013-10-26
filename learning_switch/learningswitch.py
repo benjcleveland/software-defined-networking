@@ -26,7 +26,7 @@ log = core.getLogger()
 
 # todo - add an arp and mac timeout
 HARD_TIMEOUT = 360
-IDLE_TIMEOUT = 30
+IDLE_TIMEOUT = 60
 
 ARP_TIMEOUT = 360 # timeout for entries in the ARP table
 
@@ -164,11 +164,11 @@ class LearningSwitch (EventMixin):
         self.count += 1 # keep track of the flow count - useful for debugging
         # TODO handle the case where the source and destination are the same...
 
-        # create a new flow for this source and destination
-        self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
-
         # make a flow in the other direction
         self.add_flow(event, packet.dst, packet.src, event.port)
+
+        # create a new flow for this source and destination
+        self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
 
         return
 
