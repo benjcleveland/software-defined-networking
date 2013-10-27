@@ -56,11 +56,11 @@ class LearningSwitch (EventMixin):
     Note - this code was derived/inspired from the l3_learning.py switch in POX
     '''
 
-    log.debug("we got an arp packet!!!" + str(event.connection.dpid))
+    log.debug("we got an ARP packet!!!" + str(event.connection.dpid))
    
     arp_req = packet.next
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
-        log.debug("arp proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
+        log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
         
         # update the arp table
         self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() * ARP_TIMEOUT)
@@ -68,7 +68,7 @@ class LearningSwitch (EventMixin):
         # see if we can handle the arp request (we know the dst and it hasn't expired)
         if arp_req.opcode == arp.REQUEST and arp_req.protodst in self.arptable and self.arptable[arp_req.protodst][2] > time.time():
             # we can respond to the ARP request
-            log.debug("responding to arp request...")
+            log.debug("responding to ARP request...")
 
             # create the arp response packet
             arp_res = arp()
@@ -97,7 +97,7 @@ class LearningSwitch (EventMixin):
             return
 
     # we don't know where this mac is, flood the packet
-    log.debug("flooding arp packet!" + str(self.arptable))
+    log.debug("flooding ARP packet!" + str(self.arptable))
     self.flood_packet(event)
     return 
 
@@ -125,7 +125,6 @@ class LearningSwitch (EventMixin):
         # forward the packet to the destination
         fm.data = data
 
-    #fm.buffer_id = event.ofp.buffer_id
     fm.actions.append(of.ofp_action_output(port = dst_port))
     log.debug("installing a new flow for %s to %s.%i " % (source, destination, dst_port) + str(self.count))
     self.connection.send(fm)
