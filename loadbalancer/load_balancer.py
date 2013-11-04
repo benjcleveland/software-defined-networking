@@ -88,7 +88,7 @@ class LoadBalancer(EventMixin):
     arp_req = packet.next
     if arp_req.opcode == arp.REPLY:
         log.debug("updating ip to port table %s" % (self.ip_port))
-        self.ip_port[arp_req.protosrc] = event.port
+        self.ip_port[arp_req.protosrc] = (event.port, packet.src)
     
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
         log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
@@ -221,47 +221,68 @@ class LoadBalancer(EventMixin):
 
     print packet.type
     ip = packet.find('ipv4')
-    print ip
     # if this is a TCP packet
     if ip:
-        log.debug("got ip packet!")
-        self.ip_port[ip.srcip] = event.port
+        log.debug("got ip packet! %s" %(ip))
+        self.ip_port[ip.srcip] = (event.port, packet.src)
         # do we know this IP?
         if ip.dstip == self.data_ip:
             # determine the host to forward the packet too 
             host = self.hosts[0]
             log.debug("%s woot %s %s" % (self.mymac, host, self.ip_port))
 
+            print ip
+            icmp = packet.find('icmp')
+            if icmp:
+                log.debug(icmp)
             # do we know how to get to this host?
             if host in self.ip_port:        
+                port, mac = self.ip_port[host]
                 # create a flow from this client to the host
                 fm = of.ofp_flow_mod()
-                fm.match = of.ofp_match.from_packet(packet)
-                fm.match.dl_dst = None
-                #fm.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr('00:00:00:00:00:02')))
-                fm.actions.append(of.ofp_action_output(port = self.ip_port[host]))
+                fm.match = of.ofp_match.from_packet(packet, event.port)
+                #fm.match.nw_src = ip.srcip
+                fm.match.dl_src = packet.src 
+                #fm.match.dl_dst = None
+                fm.actions.append(of.ofp_action_dl_addr.set_dst(mac))
                 fm.actions.append(of.ofp_action_nw_addr.set_dst(host))
+                fm.actions.append(of.ofp_action_output(port = port))
                 fm.data = event.ofp
                 self.connection.send(fm)
-                log.debug("added flow %s" % (fm))
+                log.debug("added flow")# %s" % (fm))
                 return
-        else:
+            
+        elif ip.srcip == self.hosts[0]:
             log.debug("I don't know what to do with this packet")
+            #port, mac = self.ip_port[ip.srcip]
+            # create a flow from this client to the host
+            fm = of.ofp_flow_mod()
+            fm.match = of.ofp_match.from_packet(packet, event.port)
+            #fm.match.nw_src = ip.srcip
+            fm.match.dl_src = packet.src 
+            #fm.match.dl_dst = None
+            fm.actions.append(of.ofp_action_dl_addr.set_src(self.mymac))
+            fm.actions.append(of.ofp_action_nw_addr.set_src(self.data_ip))
+            fm.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
+            fm.data = event.ofp
+            self.connection.send(fm)
+            log.debug("added flow")# %s" % (fm))
             # drop the packet?
+            return
 
-    #if packet.dst in self.mac:
-    #    log.debug("got past the ip stuff...")
-    #    # we know the destination port, install a flow table rule
-    #    self.count += 1 # keep track of the flow count - useful for debugging
-    #    # TODO handle the case where the source and destination are the same...
+    if packet.dst in self.mac:
+        log.debug("got past the ip stuff...")
+        # we know the destination port, install a flow table rule
+        self.count += 1 # keep track of the flow count - useful for debugging
+        # TODO handle the case where the source and destination are the same...
 
-    #    # make a flow in the other direction
-    #    self.add_flow(event, packet.dst, packet.src, event.port)
+        # make a flow in the other direction
+        self.add_flow(event, packet.dst, packet.src, event.port)
 
-    #    # create a new flow for this source and destination
-    #    self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
+        # create a new flow for this source and destination
+        self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
 
-    #    return
+        return
 
     print self.ip_port
     log.debug("Port for %s unknown -- flooding" % (packet.dst,))
