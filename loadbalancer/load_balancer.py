@@ -252,7 +252,7 @@ class LoadBalancer(EventMixin):
                 log.debug("added flow")# %s" % (fm))
                 return
             
-        elif ip.srcip == self.hosts[0]:
+        elif ip.srcip == self.hosts[0]: # put a flow in the other direction changing the ip and mac
             log.debug("I don't know what to do with this packet")
             #port, mac = self.ip_port[ip.srcip]
             # create a flow from this client to the host
