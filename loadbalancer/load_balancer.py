@@ -44,7 +44,7 @@ class LoadBalancer(EventMixin):
     self.count = 0
 
     self.data_ip = IPAddr('10.10.10.10')
-    self.hosts = [IPAddr('10.0.0.2')]
+    self.hosts = [IPAddr('10.0.0.3')]
     self.ip_port = {}
     self.mymac = self.connection.eth_addr
 
@@ -125,7 +125,7 @@ class LoadBalancer(EventMixin):
             ## event.connection.send(msg)
 
             ##return
-        if arp_req.protodst == self.data_ip:
+        if arp_req.opcode == arp.REQUEST and arp_req.protodst == self.data_ip:
             # respond to this arp from the client
             # we can respond to the ARP request
             log.debug("responding to ARP request...")
@@ -238,11 +238,12 @@ class LoadBalancer(EventMixin):
                 fm = of.ofp_flow_mod()
                 fm.match = of.ofp_match.from_packet(packet)
                 fm.match.dl_dst = None
-                fm.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr('00:00:00:00:00:02')))
+                #fm.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr('00:00:00:00:00:02')))
                 fm.actions.append(of.ofp_action_output(port = self.ip_port[host]))
                 fm.actions.append(of.ofp_action_nw_addr.set_dst(host))
+                fm.data = event.ofp
                 self.connection.send(fm)
-                log.debug("added flow")
+                log.debug("added flow %s" % (fm))
                 return
         else:
             log.debug("I don't know what to do with this packet")
