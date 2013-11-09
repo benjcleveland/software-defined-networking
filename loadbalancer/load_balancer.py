@@ -22,7 +22,7 @@ log = core.getLogger()
 HARD_TIMEOUT = 360
 IDLE_TIMEOUT = 30
 
-ARP_TIMEOUT = 360 # timeout for entries in the ARP table
+ARP_TIMEOUT = 5 # timeout for entries in the ARP table
 
 class LoadBalancer(EventMixin):
 
@@ -50,14 +50,15 @@ class LoadBalancer(EventMixin):
     self.mymac = self.connection.eth_addr
 
     # send out ARP requests for all the servers
-    #if arp == True:
-    self.send_arps()
+    if arp == True:
+        self.send_arps()
 
   def send_arps(self):
     '''
     Send out ARP requests to find the location of all the hosts
     '''
     for host in self.hosts:
+        time.sleep(1)
         r = arp()
         r.hwtype = r.HW_TYPE_ETHERNET
         r.prototype = r.PROTO_TYPE_IP
@@ -96,15 +97,15 @@ class LoadBalancer(EventMixin):
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
         log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
 
-        #if arp_req.protosrc in self.arptable:
-        #    (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
-        #    if port == event.port and packet.src == src and time.time() < ptime and dst == arp_req.protodst:
-        #        log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
-        #        # drop the packet for now...
-        #        return
+        if arp_req.protosrc in self.arptable:
+            (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
+            if port == event.port and packet.src == src and time.time() < ptime and dst == arp_req.protodst:
+                log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
+                # drop the packet for now...
+                return
         
         # update the arp table
-        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() * ARP_TIMEOUT, arp_req.protodst)
+        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
         if arp_req.opcode == arp.REQUEST and arp_req.protodst == self.data_ip:
             # respond to this arp from the client
             # we can respond to the ARP request
@@ -177,7 +178,7 @@ class LoadBalancer(EventMixin):
     packet = event.parse()
 
     # updating out mac to port mapping
-    #log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
+    log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
     self.mac[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
@@ -232,7 +233,7 @@ class LoadBalancer(EventMixin):
                 log.debug("added flow %s" % (fm))
                 return
             
-        elif ip.srcip in self.hosts: # put a flow in the other direction changing the ip and mac
+        elif ip.srcip in self.hosts and ip.dstip not in self.hosts: # put a flow in the other direction changing the ip and mac
             log.debug("I don't know what to do with this packet")
             #port, mac = self.ip_port[ip.srcip]
             # create a flow from this client to the host
