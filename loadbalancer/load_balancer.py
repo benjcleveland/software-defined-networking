@@ -16,13 +16,24 @@ from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST
 from pox.lib.addresses import IPAddr, EthAddr
 
 from learning_switch import learningswitch
+from uuid import getnode as get_mac
 log = core.getLogger()
 
 # todo - add an arp and mac timeout
 HARD_TIMEOUT = 360
 IDLE_TIMEOUT = 30
 
-ARP_TIMEOUT = 5 # timeout for entries in the ARP table
+ARP_TIMEOUT = 30 # timeout for entries in the ARP table
+
+# todo - is there a better way to do this? get the mac address
+def dpid_to_mac (dpid):
+  '''
+  get the mac address for this switch
+
+  This code was taken from l3_learning.py in POX
+  '''
+  return EthAddr("%012x" % ((0xff00000000 | dpid) & 0xffFFffFFffFF,))
+
 
 class LoadBalancer(EventMixin):
 
@@ -48,9 +59,14 @@ class LoadBalancer(EventMixin):
 
     self.ip_port = {}
     self.mymac = self.connection.eth_addr
-
+    print get_mac()
+    print self.connection
+    #self.mac = dpid_to_mac(self.connection.dpid)
+    self.mymac = dpid_to_mac(self.connection.dpid)
+    print self.mymac
     # send out ARP requests for all the servers
-    if arp == True:
+    #if arp == True:
+    if self.connection.dpid == 1:
         self.send_arps()
 
   def send_arps(self):
@@ -58,7 +74,7 @@ class LoadBalancer(EventMixin):
     Send out ARP requests to find the location of all the hosts
     '''
     for host in self.hosts:
-        time.sleep(1)
+        #time.sleep(1)
         r = arp()
         r.hwtype = r.HW_TYPE_ETHERNET
         r.prototype = r.PROTO_TYPE_IP
@@ -97,15 +113,6 @@ class LoadBalancer(EventMixin):
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
         log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
 
-        if arp_req.protosrc in self.arptable:
-            (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
-            if port == event.port and packet.src == src and time.time() < ptime and dst == arp_req.protodst:
-                log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
-                # drop the packet for now...
-                return
-        
-        # update the arp table
-        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
         if arp_req.opcode == arp.REQUEST and arp_req.protodst == self.data_ip:
             # respond to this arp from the client
             # we can respond to the ARP request
@@ -136,6 +143,16 @@ class LoadBalancer(EventMixin):
             event.connection.send(msg)
 
             return
+
+        if arp_req.protosrc in self.arptable:
+            (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
+            if port == event.port and packet.src == src and dst == arp_req.protodst:
+                log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
+                # drop the packet for now...
+                return
+        
+        # update the arp table
+        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
 
     # we don't know where this mac is, flood the packet
     #log.debug("flooding ARP packet!" + str(self.arptable))
@@ -179,7 +196,8 @@ class LoadBalancer(EventMixin):
 
     # updating out mac to port mapping
     log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
-    self.mac[packet.src] = event.port
+    if packet.src not in self.mac:
+        self.mac[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
@@ -235,6 +253,8 @@ class LoadBalancer(EventMixin):
             
         elif ip.srcip in self.hosts and ip.dstip not in self.hosts: # put a flow in the other direction changing the ip and mac
             log.debug("I don't know what to do with this packet")
+
+            print self.mac
             #port, mac = self.ip_port[ip.srcip]
             # create a flow from this client to the host
             fm = of.ofp_flow_mod()
@@ -242,17 +262,20 @@ class LoadBalancer(EventMixin):
             #fm.match.nw_src = ip.srcip
             fm.match.dl_src = packet.src 
             #fm.match.dl_dst = None
-            fm.actions.append(of.ofp_action_dl_addr.set_src(self.mymac))
+            #fm.actions.append(of.ofp_action_dl_addr.set_src(self.mymac))
             fm.actions.append(of.ofp_action_nw_addr.set_src(self.data_ip))
             fm.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
             fm.data = event.ofp
             self.connection.send(fm)
-            log.debug("added flow")# %s" % (fm))
+            log.debug("added flow %s" % (fm))
             # drop the packet?
             return
 
     if packet.dst in self.mac:
+    #if ip.dstip in self.arptable:
         log.debug("got past the ip stuff...")
+        print self.mac
+        (port, b, time, d) = self.arptable[ip.dstip]
         # we know the destination port, install a flow table rule
         self.count += 1 # keep track of the flow count - useful for debugging
         # TODO handle the case where the source and destination are the same...
@@ -267,19 +290,22 @@ class LoadBalancer(EventMixin):
 
     print self.ip_port
     log.debug("Port for %s unknown -- flooding" % (packet.dst,))
-    self.flood_packet(event)
+    #self.flood_packet(event)
 
 class load_balancer(EventMixin):
 
   def __init__(self):
     self.listenTo(core.openflow)
     self.count = True
+
   def _handle_ConnectionUp (self, event):
     log.debug("Connection %s" % (event.connection,))
     LoadBalancer(event.connection, self.count)
     self.count = False
-  #def _handle_PacketIn (self, event):
-  #  #print 'got packet event'
+
+  def _handle_PacketIn (self, event):
+    print 'got packet event', event,event.connection
+
 def launch ():
   #Starts an L2 learning switch.
   core.registerNew(load_balancer)
