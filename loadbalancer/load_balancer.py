@@ -66,10 +66,10 @@ class LoadBalancer(EventMixin):
     print self.mymac
     # send out ARP requests for all the servers
     #if arp == True:
-    if self.connection.dpid == 1:
-        self.send_arps()
+    #if self.connection.dpid == 1:
+    self._send_arps()
 
-  def send_arps(self):
+  def _send_arps(self):
     '''
     Send out ARP requests to find the location of all the hosts
     '''
@@ -94,7 +94,8 @@ class LoadBalancer(EventMixin):
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
         msg.in_port = of.OFPP_NONE
         self.connection.send(msg)
-
+    core.callDelayed(1, self._send_arps)
+    
   def handle_arp(self, event, packet):
     '''
     Handle the arp request if we can
@@ -108,7 +109,6 @@ class LoadBalancer(EventMixin):
     if arp_req.opcode == arp.REPLY:
         log.debug("updating ip to port table %s" % (self.ip_port))
         self.ip_port[arp_req.protosrc] = (event.port, packet.src)
-
     
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
         log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
@@ -143,20 +143,48 @@ class LoadBalancer(EventMixin):
             event.connection.send(msg)
 
             return
-
-        if arp_req.protosrc in self.arptable:
-            (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
-            if port == event.port and packet.src == src and dst == arp_req.protodst:
-                log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
-                # drop the packet for now...
-                return
         
         # update the arp table
         self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
+        # see if we can handle the arp request (we know the dst and it hasn't expired)
+        if arp_req.opcode == arp.REQUEST and arp_req.protodst in self.arptable and self.arptable[arp_req.protodst][2] > time.time():
+            # we can respond to the ARP request
+            log.debug("responding to ARP request...")
+
+            # create the arp response packet
+            arp_res = arp()
+            arp_res.hwtype = arp_req.hwtype
+            arp_res.prototype = arp_req.prototype
+            arp_res.hwlen = arp_req.hwlen
+            arp_res.protolen = arp_req.protolen
+            arp_res.opcode = arp.REPLY
+            arp_res.hwdst = arp_req.hwsrc
+            arp_res.protodst = arp_req.protosrc
+            arp_res.protosrc = arp_req.protodst
+            arp_res.hwsrc = self.arptable[arp_req.protodst][1]
+
+            # create an ethernet package that contains the arp response we created above
+            e = ethernet(type=packet.type, src=arp_res.hwsrc , dst=arp_req.hwsrc)
+            e.set_payload(arp_res)
+            log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
+
+            # send the ARP response
+            msg = of.ofp_packet_out()
+            msg.data = e.pack()
+            msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+            msg.in_port = event.port
+            event.connection.send(msg)
+
+        #if arp_req.protosrc in self.arptable:
+        #    (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
+        #    if port == event.port and packet.src == src and dst == arp_req.protodst:
+        #        log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
+        #        # drop the packet for now...
+        #        return
 
     # we don't know where this mac is, flood the packet
     #log.debug("flooding ARP packet!" + str(self.arptable))
-    self.flood_packet(event)
+    #self.flood_packet(event)
     return 
 
   def flood_packet(self, event):
@@ -197,6 +225,7 @@ class LoadBalancer(EventMixin):
     # updating out mac to port mapping
     log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
     if packet.src not in self.mac:
+        #don't update the port if we
         self.mac[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
@@ -272,6 +301,7 @@ class LoadBalancer(EventMixin):
             return
 
     if packet.dst in self.mac:
+        # normal switch stuff here...
     #if ip.dstip in self.arptable:
         log.debug("got past the ip stuff...")
         print self.mac
