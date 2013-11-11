@@ -196,6 +196,7 @@ class LoadBalancer(EventMixin):
             log.debug("ARP proto source..." + str(arp_req.opcode) + str(arp_req.protosrc) + str(arp_req.protodst) + str(arp_req.hwsrc))
         if arp_req.hwsrc == self.mymac:
             # this arp is from us, drop it...
+            # it means that there is a loop somewhere in the network...
             log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
             return
         self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
