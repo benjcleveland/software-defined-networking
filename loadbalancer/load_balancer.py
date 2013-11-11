@@ -2,7 +2,7 @@
 Ben Cleveland
 CSEP 561
 
-Learning Switch implementation with ARP handling
+Project 2 - Load Balancer
 '''
 
 from pox.core import core
@@ -58,11 +58,8 @@ class LoadBalancer(EventMixin):
         ]
 
     self.ip_port = {}
-    self.mymac = self.connection.eth_addr
-    print get_mac()
-    print self.connection
-    #self.mac = dpid_to_mac(self.connection.dpid)
     self.mymac = dpid_to_mac(self.connection.dpid)
+
     print self.mymac
     # send out ARP requests for all the servers
     #if arp == True:
@@ -86,23 +83,29 @@ class LoadBalancer(EventMixin):
         e = ethernet(type=ethernet.ARP_TYPE, src=self.mymac,
                      dst=ETHER_BROADCAST)
         e.set_payload(r)
-        print r
-        print e
+        
         log.debug("Sending ARP request for %s", host)
         msg = of.ofp_packet_out()
         msg.data = e.pack()
         msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
         msg.in_port = of.OFPP_NONE
         self.connection.send(msg)
+
+    # run again at some delayed interval
     core.callDelayed(1, self._send_arps)
-    
+
+  def send_arp_reply(self):
+    '''
+    Send out a reply with the given information
+    '''
+    return
+
   def handle_arp(self, event, packet):
     '''
     Handle the arp request if we can
 
     Note - this code was derived/inspired from the l3_learning.py switch in POX
     '''
-
     log.debug("we got an ARP packet!!!" + str(event.connection.dpid))
    
     arp_req = packet.next
@@ -164,6 +167,7 @@ class LoadBalancer(EventMixin):
             arp_res.hwsrc = self.arptable[arp_req.protodst][1]
 
             # create an ethernet package that contains the arp response we created above
+            # TODO - is src=arp_res.hwsrc correct?
             e = ethernet(type=packet.type, src=arp_res.hwsrc , dst=arp_req.hwsrc)
             e.set_payload(arp_res)
             log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
@@ -197,7 +201,7 @@ class LoadBalancer(EventMixin):
     msg.in_port = event.port
     self.connection.send(msg)
 
-  def add_flow(self, event, source, destination, dst_port, data = None):
+  def add_flow(self, event, source, destination, dst_port, data = None, actions = None):
     '''
     Add a new flow from the source to the destination
     '''
@@ -210,6 +214,9 @@ class LoadBalancer(EventMixin):
     if data:
         # forward the packet to the destination
         fm.data = data
+
+    if actions:
+        fm.actions = actions
 
     fm.actions.append(of.ofp_action_output(port = dst_port))
     log.debug("installing a new flow for %s to %s.%i " % (source, destination, dst_port) + str(self.count))
@@ -258,54 +265,36 @@ class LoadBalancer(EventMixin):
             host = self.hosts[hash(ip.srcip) % len(self.hosts)]
             log.debug("%s woot %s %s" % (self.mymac, host, self.ip_port))
 
-            print ip
-            icmp = packet.find('icmp')
-            if icmp:
-                log.debug(icmp)
             # do we know how to get to this host?
             if host in self.ip_port:        
-
-                port, mac = self.ip_port[host]
                 # create a flow from this client to the host
-                fm = of.ofp_flow_mod()
-                fm.match = of.ofp_match.from_packet(packet, event.port)
-                #fm.match.nw_src = ip.srcip
-                fm.match.dl_src = packet.src 
-                #fm.match.dl_dst = None
-                fm.actions.append(of.ofp_action_dl_addr.set_dst(mac))
-                fm.actions.append(of.ofp_action_nw_addr.set_dst(host))
-                fm.actions.append(of.ofp_action_output(port = port))
-                fm.data = event.ofp
-                self.connection.send(fm)
-                log.debug("added flow %s" % (fm))
+                port, mac = self.ip_port[host]
+                actions = []
+                # change the dest mac and IP to match the host we picked
+                actions.append(of.ofp_action_dl_addr.set_dst(mac))
+                actions.append(of.ofp_action_nw_addr.set_dst(host))
+                self.add_flow(event, packet.src, packet.dst, port, event.ofp, actions)
                 return
             
         elif ip.srcip in self.hosts and ip.dstip not in self.hosts: # put a flow in the other direction changing the ip and mac
             log.debug("I don't know what to do with this packet")
 
-            print self.mac
-            #port, mac = self.ip_port[ip.srcip]
             # create a flow from this client to the host
-            fm = of.ofp_flow_mod()
-            fm.match = of.ofp_match.from_packet(packet, event.port)
-            #fm.match.nw_src = ip.srcip
-            fm.match.dl_src = packet.src 
-            #fm.match.dl_dst = None
-            #fm.actions.append(of.ofp_action_dl_addr.set_src(self.mymac))
-            fm.actions.append(of.ofp_action_nw_addr.set_src(self.data_ip))
-            fm.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
-            fm.data = event.ofp
-            self.connection.send(fm)
-            log.debug("added flow %s" % (fm))
-            # drop the packet?
+            port, mac = self.ip_port[ip.dstip]
+            # change the src mac and IP to match that of the 'service'
+            actions = []
+            actions.append(of.ofp_action_dl_addr.set_src(self.mymac))
+            actions.append(of.ofp_action_nw_addr.set_src(self.data_ip))
+            self.add_flow(event, packet.src, packet.dst, port, event.ofp, actions)
             return
 
+    # act like a normal switch if this is not going to our service IP address
     if packet.dst in self.mac:
         # normal switch stuff here...
+        # TODO - handle the case where there are multiple paths
     #if ip.dstip in self.arptable:
         log.debug("got past the ip stuff...")
-        print self.mac
-        (port, b, time, d) = self.arptable[ip.dstip]
+        # (port, b, time, d) = self.arptable[ip.dstip]
         # we know the destination port, install a flow table rule
         self.count += 1 # keep track of the flow count - useful for debugging
         # TODO handle the case where the source and destination are the same...
@@ -315,11 +304,10 @@ class LoadBalancer(EventMixin):
 
         # create a new flow for this source and destination
         self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
-
         return
 
-    print self.ip_port
     log.debug("Port for %s unknown -- flooding" % (packet.dst,))
+    # this should rarely occur...
     #self.flood_packet(event)
 
 class load_balancer(EventMixin):
