@@ -257,6 +257,7 @@ class LoadBalancer(EventMixin):
     #log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
     if packet.src not in self.mac:
         #don't update the port if we already have it
+        # TODO - make a list of possible ports
         self.mac[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
