@@ -23,7 +23,7 @@ log = core.getLogger()
 
 # todo - add an arp and mac timeout
 HARD_TIMEOUT = 360
-IDLE_TIMEOUT = 30
+IDLE_TIMEOUT = 1 # for easier debugging
 
 ARP_TIMEOUT = 30 # timeout for entries in the ARP table
 
@@ -97,7 +97,7 @@ class LoadBalancer(EventMixin):
         self.connection.send(msg)
 
     # run again at some delayed interval
-    core.callDelayed(1, self._send_arps)
+    core.callDelayed(100, self._send_arps)
 
   def send_arp_reply(self):
     '''
@@ -114,12 +114,13 @@ class LoadBalancer(EventMixin):
     #log.debug("we got an ARP packet!!!" + str(event.connection.dpid))
    
     arp_req = packet.next
-    if arp_req.opcode == arp.REPLY:
-        #log.debug("updating ip to port table %s" % (self.ip_port))
+    if arp_req.opcode == arp.REPLY and arp_req.hwdst == self.mymac: # if this reply was meant for us
+        if self.connection.dpid == 1:
+            log.debug("updating ip to port table %s" % (self.ip_port))
         self.ip_port[arp_req.protosrc] = (event.port, packet.src)
+        return
     
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
-        #log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
 
         if arp_req.opcode == arp.REQUEST and arp_req.protodst == self.data_ip:
             # respond to this arp from the client
@@ -153,47 +154,55 @@ class LoadBalancer(EventMixin):
             return
         
         # update the arp table
-        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
         # see if we can handle the arp request (we know the dst and it hasn't expired)
-        if arp_req.opcode == arp.REQUEST and arp_req.protodst in self.arptable and self.arptable[arp_req.protodst][2] > time.time():
-            # we can respond to the ARP request
-            #log.debug("responding to ARP request...")
+        #if arp_req.opcode == arp.REQUEST and arp_req.protodst in self.arptable and self.arptable[arp_req.protodst][2] > time.time():
+        #    # we can respond to the ARP request
+        #    #log.debug("responding to ARP request...")
 
-            # create the arp response packet
-            arp_res = arp()
-            arp_res.hwtype = arp_req.hwtype
-            arp_res.prototype = arp_req.prototype
-            arp_res.hwlen = arp_req.hwlen
-            arp_res.protolen = arp_req.protolen
-            arp_res.opcode = arp.REPLY
-            arp_res.hwdst = arp_req.hwsrc
-            arp_res.protodst = arp_req.protosrc
-            arp_res.protosrc = arp_req.protodst
-            arp_res.hwsrc = self.arptable[arp_req.protodst][1]
+        #    # create the arp response packet
+        #    arp_res = arp()
+        #    arp_res.hwtype = arp_req.hwtype
+        #    arp_res.prototype = arp_req.prototype
+        #    arp_res.hwlen = arp_req.hwlen
+        #    arp_res.protolen = arp_req.protolen
+        #    arp_res.opcode = arp.REPLY
+        #    arp_res.hwdst = arp_req.hwsrc
+        #    arp_res.protodst = arp_req.protosrc
+        #    arp_res.protosrc = arp_req.protodst
+        #    arp_res.hwsrc = self.arptable[arp_req.protodst][1]
 
-            # create an ethernet package that contains the arp response we created above
-            # TODO - is src=arp_res.hwsrc correct?
-            e = ethernet(type=packet.type, src=arp_res.hwsrc , dst=arp_req.hwsrc)
-            e.set_payload(arp_res)
-            #log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
+        #    # create an ethernet package that contains the arp response we created above
+        #    # TODO - is src=arp_res.hwsrc correct?
+        #    e = ethernet(type=packet.type, src=self.arptable[arp_req.protodst][1], dst=arp_req.hwsrc)
+        #    e.set_payload(arp_res)
+        #    #log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
 
-            # send the ARP response
-            msg = of.ofp_packet_out()
-            msg.data = e.pack()
-            msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
-            msg.in_port = event.port
-            event.connection.send(msg)
+        #    # send the ARP response
+        #    msg = of.ofp_packet_out()
+        #    msg.data = e.pack()
+        #    msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+        #    msg.in_port = event.port
+        #    event.connection.send(msg)
 
         #if arp_req.protosrc in self.arptable:
+        #    # TODO - think about this more... should there be some kind of timeout?
         #    (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
         #    if port == event.port and packet.src == src and dst == arp_req.protodst:
         #        log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
         #        # drop the packet for now...
         #        return
 
+        if self.connection.dpid == 1:
+            log.debug("ARP proto source..." + str(arp_req.opcode) + str(arp_req.protosrc) + str(arp_req.protodst) + str(arp_req.hwsrc))
+        if arp_req.hwsrc == self.mymac:
+            # this arp is from us, drop it...
+            log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
+            return
+        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
+
     # we don't know where this mac is, flood the packet
     #log.debug("flooding ARP packet!" + str(self.arptable))
-    #self.flood_packet(event)
+    self.flood_packet(event)
     return 
 
   def flood_packet(self, event):
@@ -246,7 +255,7 @@ class LoadBalancer(EventMixin):
     # updating out mac to port mapping
     #log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
     if packet.src not in self.mac:
-        #don't update the port if we
+        #don't update the port if we already have it
         self.mac[packet.src] = event.port
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
@@ -308,6 +317,7 @@ class LoadBalancer(EventMixin):
         # TODO - handle the case where there are multiple paths
     #if ip.dstip in self.arptable:
         log.debug("got past the ip stuff...")
+        print self.ip_port
         # (port, b, time, d) = self.arptable[ip.dstip]
         # we know the destination port, install a flow table rule
         self.count += 1 # keep track of the flow count - useful for debugging
