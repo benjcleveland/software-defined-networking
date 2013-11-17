@@ -44,7 +44,6 @@ class LoadBalancer(EventMixin):
     # Switch we'll be adding L2 learning switch capabilities to
     self.connection= connection
     self.listenTo(connection)
-    self.arptable = {}
     self.mac = {}
     
     self.data_ip = IPAddr('10.10.10.10')
@@ -158,12 +157,11 @@ class LoadBalancer(EventMixin):
             # it means that there is a loop somewhere in the network...
             #log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst) + str(self.mymac) + str(self.connection.dpid))
             return
-        self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
 
     if arp_req.REPLY and packet.dst in self.mac:
         log.debug("sending to specific destination...")
         msg = of.ofp_packet_out()
-        msg.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
+        msg.actions.append(of.ofp_action_output(port = self.mac[packet.dst][0]))
         msg.buffer_id = event.ofp.buffer_id
         msg.in_port = event.port
         self.connection.send(msg)
@@ -179,8 +177,7 @@ class LoadBalancer(EventMixin):
         return
 
     # we don't know where this mac is, flood the packet
-    #log.debug("flooding ARP packet!" + str(self.arptable))
-    log.debug("flooding arp packet..." + str(arp_req))
+    #log.debug("flooding arp packet..." + str(arp_req))
     self.flood_packet(event)
     return 
 
@@ -232,12 +229,16 @@ class LoadBalancer(EventMixin):
     # parsing the input packet
     packet = event.parse()
 
-    # updating out mac to port mapping
     #log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
-    if packet.src not in self.mac:
-        #don't update the port if we already have it
-        # TODO - make a list of possible ports
-        self.mac[packet.src] = event.port
+
+    # updating out mac to port mapping
+    #if packet.src not in self.mac:
+    #    #don't update the port if we already have it
+    #    # TODO - make a list of possible ports
+    #    self.mac[packet.src] = [event.port]
+    #else:
+
+    self.mac[packet.src] = self.mac.get(packet.src,[]) + [event.port]
 
     if packet.type == packet.LLDP_TYPE or packet.type == 0x86DD:
       # Drop LLDP packets 
@@ -254,9 +255,6 @@ class LoadBalancer(EventMixin):
     if isinstance(packet.next, arp):
         return self.handle_arp(event, packet)
     
-    # update the ARP table
-    #self.arptable[packet.next.srcip] = (event.port, packet.src, time.time() + ARP_TIMEOUT)
-
     print packet.type
     ip = packet.find('ipv4')
     # if this is a TCP packet
@@ -296,10 +294,8 @@ class LoadBalancer(EventMixin):
     if packet.dst in self.mac:
         # normal switch stuff here...
         # TODO - handle the case where there are multiple paths
-    #if ip.dstip in self.arptable:
         log.debug("got past the ip stuff...")
         print self.ip_port
-        # (port, b, time, d) = self.arptable[ip.dstip]
         # we know the destination port, install a flow table rule
 
         # TODO handle the case where the source and destination are the same...
@@ -308,7 +304,7 @@ class LoadBalancer(EventMixin):
         self.add_flow(event, packet.dst, packet.src, event.port)
 
         # create a new flow for this source and destination
-        self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
+        self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst][randint(0, len(self.mac[packet.dst])-1)], event.ofp)
         return
 
     #log.debug("Port for %s unknown -- flooding" % (packet.dst,))
