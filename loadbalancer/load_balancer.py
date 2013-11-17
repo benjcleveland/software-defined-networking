@@ -169,10 +169,10 @@ class LoadBalancer(EventMixin):
         self.connection.send(msg)
         return
 
-    if arp_req.protodst in self.arptable and arp_req.protodst != self.data_ip:
-        log.debug("output to sending to specific destination...")
+    if arp_req.protodst in self.ip_port and arp_req.protodst != self.data_ip:
+        log.debug("output to sending to specific destination..." + str(arp_req.protodst) +str(arp_req.hwsrc))
         msg = of.ofp_packet_out()
-        msg.actions.append(of.ofp_action_output(port = self.arptable[arp_req.protodst][0]))
+        msg.actions.append(of.ofp_action_output(port = self.ip_port[arp_req.protodst][0]))
         msg.buffer_id = event.ofp.buffer_id
         msg.in_port = event.port
         self.connection.send(msg)
