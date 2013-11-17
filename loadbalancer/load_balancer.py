@@ -1,6 +1,7 @@
 '''
 Ben Cleveland
 CSEP 561
+ben.j.cleveland@gmail.com
 
 Project 2 - Load Balancer
 '''
@@ -45,7 +46,6 @@ class LoadBalancer(EventMixin):
     self.listenTo(connection)
     self.arptable = {}
     self.mac = {}
-    self.count = 0
     
     self.data_ip = IPAddr('10.10.10.10')
     # list of IP addresses in the data system
@@ -97,7 +97,7 @@ class LoadBalancer(EventMixin):
         self.connection.send(msg)
 
     # run again at some delayed interval
-    core.callDelayed(100, self._send_arps)
+    #core.callDelayed(100, self._send_arps)
 
   def send_arp_reply(self):
     '''
@@ -153,47 +153,6 @@ class LoadBalancer(EventMixin):
 
             return
         
-        # update the arp table
-        # see if we can handle the arp request (we know the dst and it hasn't expired)
-        #if arp_req.opcode == arp.REQUEST and arp_req.protodst in self.arptable and self.arptable[arp_req.protodst][2] > time.time():
-        #    # we can respond to the ARP request
-        #    #log.debug("responding to ARP request...")
-
-        #    # create the arp response packet
-        #    arp_res = arp()
-        #    arp_res.hwtype = arp_req.hwtype
-        #    arp_res.prototype = arp_req.prototype
-        #    arp_res.hwlen = arp_req.hwlen
-        #    arp_res.protolen = arp_req.protolen
-        #    arp_res.opcode = arp.REPLY
-        #    arp_res.hwdst = arp_req.hwsrc
-        #    arp_res.protodst = arp_req.protosrc
-        #    arp_res.protosrc = arp_req.protodst
-        #    arp_res.hwsrc = self.arptable[arp_req.protodst][1]
-
-        #    # create an ethernet package that contains the arp response we created above
-        #    # TODO - is src=arp_res.hwsrc correct?
-        #    e = ethernet(type=packet.type, src=self.arptable[arp_req.protodst][1], dst=arp_req.hwsrc)
-        #    e.set_payload(arp_res)
-        #    #log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
-
-        #    # send the ARP response
-        #    msg = of.ofp_packet_out()
-        #    msg.data = e.pack()
-        #    msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
-        #    msg.in_port = event.port
-        #    event.connection.send(msg)
-
-        #if arp_req.protosrc in self.arptable:
-        #    # TODO - think about this more... should there be some kind of timeout?
-        #    (port, src, ptime, dst) = self.arptable[arp_req.protosrc]
-        #    if port == event.port and packet.src == src and dst == arp_req.protodst:
-        #        log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
-        #        # drop the packet for now...
-        #        return
-
-        if self.connection.dpid == 1:
-            log.debug("ARP proto source..." + str(arp_req.opcode) + str(arp_req.protosrc) + str(arp_req.protodst) + str(arp_req.hwsrc))
         if arp_req.hwsrc == self.mymac:
             # this arp is from us, drop it...
             # it means that there is a loop somewhere in the network...
@@ -202,7 +161,7 @@ class LoadBalancer(EventMixin):
         self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
 
     # we don't know where this mac is, flood the packet
-    #log.debug("flooding ARP packet!" + str(self.arptable))
+    log.debug("flooding ARP packet!" + str(self.arptable))
     self.flood_packet(event)
     return 
 
@@ -234,7 +193,7 @@ class LoadBalancer(EventMixin):
         fm.actions = actions
 
     fm.actions.append(of.ofp_action_output(port = dst_port))
-    log.debug("installing a new flow for %s to %s.%i " % (source, destination, dst_port) + str(self.count))
+    log.debug("installing a new flow for %s to %s.%i " % (source, destination, dst_port))
     self.connection.send(fm)
 
   def select_host(self, source):    
@@ -322,7 +281,7 @@ class LoadBalancer(EventMixin):
         print self.ip_port
         # (port, b, time, d) = self.arptable[ip.dstip]
         # we know the destination port, install a flow table rule
-        self.count += 1 # keep track of the flow count - useful for debugging
+
         # TODO handle the case where the source and destination are the same...
 
         # make a flow in the other direction
