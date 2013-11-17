@@ -35,7 +35,7 @@ def dpid_to_mac (dpid):
 
   This code was taken from l3_learning.py in POX
   '''
-  return EthAddr("%012x" % ((0xff00000000 | dpid) & 0xffFFffFFffFF,))
+  return EthAddr("%012x" % ((0xffff000000 | dpid) & 0xffFFffFFffFF,))
 
 
 class LoadBalancer(EventMixin):
@@ -137,7 +137,7 @@ class LoadBalancer(EventMixin):
             arp_res.hwdst = arp_req.hwsrc
             arp_res.protodst = arp_req.protosrc
             arp_res.protosrc = arp_req.protodst
-            arp_res.hwsrc = self.mymac#self.arptable[arp_req.protodst][1]
+            arp_res.hwsrc = self.mymac
 
             # create an ethernet package that contains the arp response we created above
             e = ethernet(type=packet.type, src=self.mymac, dst=arp_req.hwsrc)
@@ -156,12 +156,31 @@ class LoadBalancer(EventMixin):
         if arp_req.hwsrc == self.mymac:
             # this arp is from us, drop it...
             # it means that there is a loop somewhere in the network...
-            log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst))
+            #log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst) + str(self.mymac) + str(self.connection.dpid))
             return
         self.arptable[arp_req.protosrc] = (event.port, packet.src, time.time() + ARP_TIMEOUT, arp_req.protodst)
 
+    if arp_req.REPLY and packet.dst in self.mac:
+        log.debug("sending to specific destination...")
+        msg = of.ofp_packet_out()
+        msg.actions.append(of.ofp_action_output(port = self.mac[packet.dst]))
+        msg.buffer_id = event.ofp.buffer_id
+        msg.in_port = event.port
+        self.connection.send(msg)
+        return
+
+    if arp_req.protodst in self.arptable and arp_req.protodst != self.data_ip:
+        log.debug("output to sending to specific destination...")
+        msg = of.ofp_packet_out()
+        msg.actions.append(of.ofp_action_output(port = self.arptable[arp_req.protodst][0]))
+        msg.buffer_id = event.ofp.buffer_id
+        msg.in_port = event.port
+        self.connection.send(msg)
+        return
+
     # we don't know where this mac is, flood the packet
-    log.debug("flooding ARP packet!" + str(self.arptable))
+    #log.debug("flooding ARP packet!" + str(self.arptable))
+    log.debug("flooding arp packet..." + str(arp_req))
     self.flood_packet(event)
     return 
 
@@ -188,6 +207,7 @@ class LoadBalancer(EventMixin):
     if data:
         # forward the packet to the destination
         fm.data = data
+        fm.buffer_id = data.buffer_id
 
     if actions:
         fm.actions = actions
@@ -291,7 +311,7 @@ class LoadBalancer(EventMixin):
         self.add_flow(event, packet.src, packet.dst, self.mac[packet.dst], event.ofp)
         return
 
-    log.debug("Port for %s unknown -- flooding" % (packet.dst,))
+    #log.debug("Port for %s unknown -- flooding" % (packet.dst,))
     # this should rarely occur...
     #self.flood_packet(event)
 
