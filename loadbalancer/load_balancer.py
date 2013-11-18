@@ -28,7 +28,18 @@ IDLE_TIMEOUT = 1 # for easier debugging
 
 ARP_TIMEOUT = 30 # timeout for entries in the ARP table
 
-# todo - is there a better way to do this? get the mac address
+SERVICE_IP_ADDR = IPAddr('10.10.10.10')
+# list of IP addresses in the data system
+HOST_IPS =  [IPAddr('10.0.0.2'), 
+        IPAddr('10.0.0.3'),
+        IPAddr('10.0.0.4'),
+        IPAddr('10.0.0.5'),
+        IPAddr('10.0.0.6'),
+        IPAddr('10.0.0.7'),
+        IPAddr('10.0.0.8'),
+        IPAddr('10.0.0.9'),
+        ]
+
 def dpid_to_mac (dpid):
   '''
   get the mac address for this switch
@@ -46,17 +57,8 @@ class LoadBalancer(EventMixin):
     self.listenTo(connection)
     self.mac = {}
     
-    self.data_ip = IPAddr('10.10.10.10')
-    # list of IP addresses in the data system
-    self.hosts = [IPAddr('10.0.0.2'), 
-        IPAddr('10.0.0.3'),
-        IPAddr('10.0.0.4'),
-        IPAddr('10.0.0.5'),
-        IPAddr('10.0.0.6'),
-        IPAddr('10.0.0.7'),
-        IPAddr('10.0.0.8'),
-        IPAddr('10.0.0.9'),
-        ]
+    self.data_ip = SERVICE_IP_ADDR
+    self.hosts = HOST_IPS
 
     self.ip_port = {}
     self._all = False
@@ -66,24 +68,22 @@ class LoadBalancer(EventMixin):
     seed()
 
     print self.mymac
+
     # send out ARP requests for all the servers
-    #if arp == True:
-    #if self.connection.dpid == 9:
     core.callDelayed(1, self._send_arps)
-    #self._send_arps()
 
   def _send_arps(self):
     '''
     Send out ARP requests to find the location of all the hosts
     '''
+
     for host in self.hosts:
-        #time.sleep(1)
         r = arp()
         r.hwtype = r.HW_TYPE_ETHERNET
         r.prototype = r.PROTO_TYPE_IP
         r.opcode = r.REQUEST
         r.hwdst = ETHER_BROADCAST
-        r.protodst = host #server
+        r.protodst = host
         r.hwsrc = self.mymac
         r.protosrc = self.data_ip
         e = ethernet(type=ethernet.ARP_TYPE, src=self.mymac,
@@ -119,14 +119,9 @@ class LoadBalancer(EventMixin):
         if arp_req.protosrc not in self.ip_port:
             self.ip_port[arp_req.protosrc] = (event.port, packet.src)
 
-        #if self.connection.dpid == 9:
-        #    log.debug("updating ip to port table %s %s" % (self.ip_port, len(self.ip_port)))
         if len(self.hosts) == len(self.ip_port) and self._all == False:
-            log.debug("I got them all!" + str(self.connection.dpid))
+            log.debug("I got them all!" + str(self.connection.dpid)) #+ str(self.mac))
             self._all = True
-
-            if self.connection.dpid == 6:
-                log.debug("updating ip to port table %s %s %s" % (self.ip_port, len(self.ip_port), self.mac))
         return
     
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
@@ -163,7 +158,6 @@ class LoadBalancer(EventMixin):
             return
         
         if arp_req.hwsrc == self.mymac and arp_req.protodst in self.ip_port:
-            #log.debug("loooop!!" + str(self.connection.dpid))
             # this arp is from us, and we already have the mac drop it...
             # it means that there is a loop somewhere in the network...
             #log.debug("dropping arp packet"  + str(arp_req.protosrc) + str(arp_req.protodst) + str(self.mymac) + str(self.connection.dpid))
@@ -191,7 +185,6 @@ class LoadBalancer(EventMixin):
     msg = of.ofp_packet_out()
     msg.actions.append(of.ofp_action_output(port = port))
     msg.data = event.ofp.data
-    #msg.buffer_id = event.ofp.buffer_id
     msg.in_port = event.port
     self.connection.send(msg)
 
@@ -201,7 +194,6 @@ class LoadBalancer(EventMixin):
     '''
     msg = of.ofp_packet_out()
     msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
-    #msg.buffer_id = event.ofp.buffer_id
     msg.data = event.ofp.data
     msg.in_port = event.port
     self.connection.send(msg)
@@ -246,15 +238,9 @@ class LoadBalancer(EventMixin):
 
     #log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
 
-    # updating out mac to port mapping
-    #if packet.src not in self.mac:
-    #    #don't update the port if we already have it
-    #    # TODO - make a list of possible ports
-    #    self.mac[packet.src] = [event.port]
-    #else:
-
-    # TODO fix this - make it so you can have one copy of each
-    self.mac[packet.src] = self.mac.get(packet.src,[]) + [event.port]
+    if event.port not in self.mac.get(packet.src, []):
+        # keep track of multiple paths to the this src
+        self.mac[packet.src] = self.mac.get(packet.src,[]) + [event.port]
     #if packet.src not in self.mac:
     #    self.mac[packet.src] = [event.port]
 
@@ -283,7 +269,7 @@ class LoadBalancer(EventMixin):
         if ip.dstip == self.data_ip:
             # determine the host to forward the packet too 
             host = self.select_host(ip.srcip)
-            log.debug("%s woot %s %s" % (self.mymac, host, self.ip_port))
+            log.debug("%s load balancing %s %s" % (self.mymac, host, self.ip_port))
 
             # do we know how to get to this host?
             if host in self.ip_port:        
@@ -297,7 +283,7 @@ class LoadBalancer(EventMixin):
                 return
             
         elif ip.srcip in self.hosts and ip.dstip not in self.hosts: # put a flow in the other direction changing the ip and mac
-            log.debug("I don't know what to do with this packet" + str(self.connection.dpid))
+            log.debug("Sending this packet back to the client" + str(self.connection.dpid))
 
             # create a flow from this client to the host
             port, mac = self.ip_port[ip.dstip]
@@ -311,9 +297,7 @@ class LoadBalancer(EventMixin):
     # act like a normal switch if this is not going to our service IP address
     if packet.dst in self.mac:
         # normal switch stuff here...
-        # TODO - handle the case where there are multiple paths
-        log.debug("got past the ip stuff...")
-        print self.ip_port
+        log.debug("creating normal switch flow...")
         # we know the destination port, install a flow table rule
 
         # TODO handle the case where the source and destination are the same...
@@ -337,9 +321,6 @@ class load_balancer(EventMixin):
   def _handle_ConnectionUp (self, event):
     log.debug("Connection %s" % (event.connection,))
     LoadBalancer(event.connection)
-
-  #def _handle_PacketIn (self, event):
-  #  print 'got packet event', event,event.connection
 
 def launch ():
   #Starts an L2 learning switch.
