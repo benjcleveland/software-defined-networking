@@ -22,13 +22,13 @@ from random import randint, seed
 
 log = core.getLogger()
 
-# todo - add an arp and mac timeout
 HARD_TIMEOUT = 360
-IDLE_TIMEOUT = 1 # for easier debugging
+IDLE_TIMEOUT = 10 # for easier debugging
 
 ARP_TIMEOUT = 30 # timeout for entries in the ARP table
 
 SERVICE_IP_ADDR = IPAddr('10.10.10.10')
+
 # list of IP addresses in the data system
 HOST_IPS =  [IPAddr('10.0.0.2'), 
         IPAddr('10.0.0.3'),
