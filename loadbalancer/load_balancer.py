@@ -126,7 +126,7 @@ class LoadBalancer(EventMixin):
             self._all = True
 
             if self.connection.dpid == 6:
-                log.debug("updating ip to port table %s %s" % (self.ip_port, len(self.ip_port)))
+                log.debug("updating ip to port table %s %s %s" % (self.ip_port, len(self.ip_port), self.mac))
         return
     
     if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
@@ -253,6 +253,7 @@ class LoadBalancer(EventMixin):
     #    self.mac[packet.src] = [event.port]
     #else:
 
+    # TODO fix this - make it so you can have one copy of each
     self.mac[packet.src] = self.mac.get(packet.src,[]) + [event.port]
     #if packet.src not in self.mac:
     #    self.mac[packet.src] = [event.port]
