@@ -19,9 +19,12 @@ class nat(EventMixin):
         self.listenTo(connection)
         self.eth2_ip = IPAddr('172.64.3.1')
         self.eth1_ip = IPAddr('10.0.1.1')
+
         # todo - this only works in carp...
         self.mac = connection.eth_addr 
         print self.mac
+
+        self.outmac = connection.ports[4].hw_addr
 
         self.arp_table = {} # ip to mac,port
         self.port_map = {} # port -> ip, port
@@ -68,6 +71,7 @@ class nat(EventMixin):
             log.debug("updating arp table for %s" % arp_req.protosrc)
             self.arp_table[arp_req.protosrc] = (packet.src, event.port)
 
+
     def _handle_PacketIn(self, event):
         '''
         handle packets that are sent to the controller
@@ -96,31 +100,48 @@ class nat(EventMixin):
                 # change the source ip and port of this packet
                 #tcp.srcport = port
     
-                msg = of.ofp_packet_out()
-                #msg = of.ofp_flow_mod()
+                #msg = of.ofp_packet_out()
+                msg = of.ofp_flow_mod()
                 msg.data = event.ofp
                 msg.in_port = event.port
-                msg.actions.append(of.ofp_action_dl_addr.set_src(self.mac))
+                
+                msg.match.nw_proto = 6
+                msg.match.in_port = event.port
+                msg.match.tp_src = tcp.srcport
+                msg.match.dl_src = packet.src
+                msg.match.nw_src = packet.find('ipv4').srcip
+                print "dstination",packet.dst
+
+                msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[packet.find('ipv4').dstip][0]))
+                msg.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
                 msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
                 msg.actions.append(of.ofp_action_tp_port.set_src(port))
                 # update the destination mac based on the IP?
-                msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[packet.find('ipv4').dstip][0]))
                 msg.actions.append(of.ofp_action_output(port = 4))
+                print msg
                 self.connection.send(msg)
 
             elif event.port == 4:
                 log.debug("creating flow from outside in!")
-                print self.port_map
+                print self.port_map, self.arp_table, tcp.seq
                 # setup a flow in the other direction
                 ip, ip_port = self.port_map[tcp.dstport]
                 mac, port = self.arp_table[ip]
 
-                #msg2 = of.ofp_flow_mod()
-                msg = of.ofp_packet_out()
+                msg = of.ofp_flow_mod()
+                #msg = of.ofp_packet_out()
                 msg.data = event.ofp
-                msg.in_port = 4
+                msg.in_port = event.port
 
-                msg.actions.append(of.ofp_action_dl_addr.set_src(self.mac))
+                msg.match.nw_proto = 6
+                msg.match.in_port = event.port
+                msg.match.dl_src = packet.src
+                msg.match.tp_src = tcp.srcport
+                msg.match.tp_dst = tcp.dstport
+                msg.match.nw_src = packet.find('ipv4').srcip
+                #msg.match.nw_src = 
+
+                #msg.actions.append(of.ofp_action_dl_addr.set_src(self.mac))
                 #msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth1_ip))
                 msg.actions.append(of.ofp_action_tp_port.set_dst(ip_port))
                 msg.actions.append(of.ofp_action_dl_addr.set_dst(mac))
