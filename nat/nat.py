@@ -83,6 +83,7 @@ class nat(EventMixin):
         # handle arp
         if isinstance(packet.next, arp):
             return self.handle_arp(event, packet)
+
         log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
 
         tcp = packet.find('tcp')
@@ -91,7 +92,7 @@ class nat(EventMixin):
 
             # we got a tcp packet!
             log.debug("received a tcp packet! %s" % tcp)
-            if tcp.SYN == True and event.port != 4:
+            if event.port != 4: # and tcp.SYN == True
                 log.debug("receive a SYN packet!!")
                 port = self.map_port(tcp)
                 self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport)
@@ -105,7 +106,9 @@ class nat(EventMixin):
                 msg.data = event.ofp
                 msg.in_port = event.port
                 
+                #msg.match = of.ofp_match.from_packet(packet)
                 msg.match.nw_proto = 6
+                msg.match.dl_type = 0x800
                 msg.match.in_port = event.port
                 msg.match.tp_src = tcp.srcport
                 msg.match.dl_src = packet.src
@@ -138,9 +141,11 @@ class nat(EventMixin):
                 msg.match.dl_src = packet.src
                 msg.match.tp_src = tcp.srcport
                 msg.match.tp_dst = tcp.dstport
+                msg.match.dl_type = 0x800
                 msg.match.nw_src = packet.find('ipv4').srcip
                 #msg.match.nw_src = 
 
+                #msg.match = of.ofp_match.from_packet(packet)
                 #msg.actions.append(of.ofp_action_dl_addr.set_src(self.mac))
                 #msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth1_ip))
                 msg.actions.append(of.ofp_action_tp_port.set_dst(ip_port))
