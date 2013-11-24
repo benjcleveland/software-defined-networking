@@ -10,11 +10,15 @@ from pox.lib.packet.ethernet import ETHER_BROADCAST
 
 from learning_switch import learningswitch
 
+import time
+
 log = core.getLogger()
 
 # TCP timeouts in seconds
-TCP_ESTABLISHED_TIMEOUT = 7440
-TCP_TRANSITORY_TIMEOUT = 300
+#TCP_ESTABLISHED_TIMEOUT = 7440
+#TCP_TRANSITORY_TIMEOUT = 300
+TCP_ESTABLISHED_TIMEOUT = 7
+TCP_TRANSITORY_TIMEOUT = 3
 
 # states
 ESTABLISHED = 'established'
@@ -29,9 +33,15 @@ class connection():
         self.ip = ip
         self.dstport = dstport
         self.state = state
+        self.client_fin = False
+        self.server_fin = False
+        self.last_time = time.time()
 
     def __str__(self):
         return str(self.ip) + ':' + str(self.port)
+
+    def touch(self):
+        self.last_time = time.time()
 
 class natmap():
     ''' 
@@ -66,6 +76,9 @@ class natmap():
             ret = self.port_map.get(ret, None)
         return ret
 
+    def __iter__(self):
+        return self.port_map.iteritems()
+
 class nat(EventMixin):
     def __init__(self, connection):
         # add the nat to this switch
@@ -88,6 +101,29 @@ class nat(EventMixin):
         #todo...
         self.send_arp(IPAddr('172.64.3.21'))
         self.send_arp(IPAddr('172.64.3.22'))
+
+        core.callDelayed(1, self.cleanupConnections)
+
+    def cleanupConnections(self):
+        '''
+        periodically cleanup connections that have timed out
+        '''
+        log.debug("running cleanup connections!!")
+        remove = []
+        for port, con in self.natmap:
+            if con.state == ESTABLISHED:
+                if con.last_time + TCP_ESTABLISHED_TIMEOUT < time.time():
+                    log.debug("removing connection, established timeout")
+                    remove.append(con)
+            else:
+                if con.last_time + TCP_TRANSITORY_TIMEOUT < time.time():
+                    log.debug("removing connection, transitory timeout")
+                    remove.append(con)
+
+        for con in remove:
+            log.debug("really removing the connection!!")
+            self.natmap.remove(con)
+        core.callDelayed(1, self.cleanupConnections)
 
     def send_arp(self, host):
         r = arp()
@@ -346,39 +382,41 @@ class nat(EventMixin):
                         log.debug("DROPPING PACKET AT START OF CONNECTION!!")
                
                 else:  # connection exists
-                    log.debug("connection already exists")
+                    log.debug("connection already exists, %s" % con.state)
                     # depending on the state we are in 
                     # if waiting for syn ack
                     if con.state == SYN_ACK_RECV:
                         if tcp.ACK == True and tcp.SYN == False:
                             # update state     
                             con.state = ESTABLISHED
-                            self.natmap.add(con)
                             # forward message
                     elif con.state == ESTABLISHED:
                         # check for fin
                         if tcp.FIN == True:
                             log.debug("client sent fin!!")
                             # update state to closing
+                            con.state = CLOSING
                         log.debug("established")
+                    elif con.state == CLOSING:
+                        if tcp.FIN == True and tcp.ACK == False:
+                            log.debug("client sent fin!!")
+                            # update state to closing
+                            con.state = CLOSING
+                        if tcp.ACK == True:
+                            # client closed
+                            if con.server_fin and con.client_fin:
+                                # remove the connection
+                                log.debug("removing connection client")
+                                self.natmap.remove(con)
                     else:
                         log.debug("in unhandled state...")
                         return
 
+                    con.touch()
+                    self.natmap.add(con)
                     log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
                     self.send_outpacket(event, ip.dstip, con.dstport)
                         
-                    # if waiting for client ack
-                        # if this is an ack from client
-                            # forward message 
-                            # update state to established    
-                        # check for fin
-                            # update state to closing
-                        # forward the message 
-                    # if closing
-                        # if waiting for ack
-                            # remove connection
-
             else:# from outside
                 # if the connection does not exist
                 con = self.natmap.getCon(tcp.dstport)
@@ -389,19 +427,32 @@ class nat(EventMixin):
                     if con.state == SYN_SENT:
                         if tcp.SYN == True and tcp.ACK == True:
                             con.state = SYN_ACK_RECV
-                            self.natmap.add(con)
                     elif con.state == ESTABLISHED:
                         log.debug("established")
                         if tcp.FIN == True:
                             log.debug("sever sent fin!!!")
+                            con.state = CLOSING
+                            con.server_fin = True
+                    elif con.state == CLOSING:
+                        if tcp.FIN == True:
+                            log.debug("sever sent fin!!!")
+                            con.state = CLOSING
+                            con.server_fin = True
+                        if tcp.ACK == True:
+                            # server closed
+                            if con.server_fin and con.client_fin:
+                                log.debug("removing connection server")
+                                self.natmap.remove(con)
                     else:
                         log.debug("in unhandled state...");    
                         return
                     # send out the packet
                     log.debug("sending server packet...")
+
+                    con.touch()
+                    self.natmap.add(con)
                     mac, port = self.arp_table[con.ip]
                     self.send_inpacket(event, con.ip, con.port, mac, port)
-
 
         # ignore UDP messages....
 
