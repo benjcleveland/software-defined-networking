@@ -12,14 +12,60 @@ from learning_switch import learningswitch
 
 log = core.getLogger()
 
+# TCP timeouts in seconds
+TCP_ESTABLISHED_TIMEOUT = 7440
+TCP_TRANSITORY_TIMEOUT = 300
+
+# states
+ESTABLISHED = 'established'
+SYN_SENT = 'syn_sent'
+SYN_ACK_RECV = 'syn ack recv'
+CONNECTING = 'connecting'
+CLOSING = 'closing'
+
+class connection():
+    def __init__(self, ip, port, dstport, state=SYN_SENT):
+        self.port = port
+        self.ip = ip
+        self.dstport = dstport
+        self.state = state
+
+    def __str__(self):
+        return str(self.ip) + ':' + str(self.port)
+
 class natmap():
     ''' 
     class containing information about a connection
     '''
 
     def __init__(self):
+        self.port_map = {} # nat port -> client ip, port
+        self.rev_map = {} # client ip, port - > nat port
         return
     
+    def add(self, con):
+        '''
+        add a connection to track
+        '''
+        self.port_map[con.dstport] = con
+        self.rev_map[str(con)] = con.dstport
+
+    def remove(self, con):
+        del self.port_map[con.dstport]
+        del self.rev_map[str(con)]
+        return
+
+    def getCon(self, port):
+        return self.port_map.get(port, None) 
+
+    def getConIp(self, client_ip, port):
+        print self.rev_map
+        ipport = str(client_ip) + ':' + str(port)
+        ret = self.rev_map.get(ipport, None)
+        if ret != None:
+            ret = self.port_map.get(ret, None)
+        return ret
+
 class nat(EventMixin):
     def __init__(self, connection):
         # add the nat to this switch
@@ -36,6 +82,8 @@ class nat(EventMixin):
 
         self.arp_table = {} # ip to mac,port
         self.port_map = {} # port -> ip, port
+
+        self.natmap = natmap()
 
         #todo...
         self.send_arp(IPAddr('172.64.3.21'))
@@ -61,13 +109,6 @@ class nat(EventMixin):
         msg.actions.append(of.ofp_action_output(port = 4))
         msg.in_port = of.OFPP_NONE
         self.connection.send(msg)
-
-    def map_port(self, tcp):
-        '''
-        return a port to map this connection to 
-        '''
-        # todo - this need to be a lot better...
-        return tcp.srcport + 1000
 
     def handle_arp(self, event, packet):
         '''
@@ -130,6 +171,14 @@ class nat(EventMixin):
         #print msg
         self.connection.send(msg)
 
+    def map_port(self, port):
+        '''
+        return a port to map this connection to 
+        '''
+        # todo - this need to be a lot better...
+        dstport = port + 1000
+        return dstport
+
     def _handle_PacketIn(self, event):
         '''
         handle packets that are sent to the controller
@@ -151,62 +200,208 @@ class nat(EventMixin):
             # we got a tcp packet!
             log.debug("received a tcp packet! %s" % tcp)
 
-            if tcp.SYN == True and tcp.ACK == False:
-                # create a new connection
-                log.debug("receive a SYN packet!!")
-                port = self.map_port(tcp)
-                self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport)
-                log.debug("using port %s" % port)
+            ## going out
+            #if event.port != 4:
+            #    # if we don't have a connection
+            #    if self.natmap.getDest(ip.srcip, tcp.srcport) == None and event.port != 4:
+            #        # can we create a new connection?
+            #        # yes (syn from client) or ?
+            #        if tcp.SYN == True and tcp.ACK == False:
+            #            # create a new connection
+            #            self.natmap.add(ip.srcip, tcp.srcport)
+            #            dstport = self.natmap.getDest(ip.srcip, tcp.srcport)
+            #            log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
+            #            self.send_outpacket(event, ip.dstip, dstport)
+            #        else: # no
+            #            # ignore this packet
+            #            log.debug("DROPPING PACKET AT START OF CONNECTION!!")
+            #    # we have a connection
+            #        # depending on the state we are in 
+            #        # if waiting for syn ack
+            #            # if this is a syn ack
+            #                # forward message
+            #                # update state     
+            #        # if waiting for client ack
+            #            # if this is an ack from client
+            #                # forward message 
+            #                # update state to established    
+            #        # if established
+            #            # check for fin
+            #                # update state to closing
+            #            # forward the message 
+            #        # if closing
+            #            # if waiting for ack
+            #                # remove connection
+            #else:
+            #    # coming in
+            #    if self.natmap.getSource(tcp.dstport) != None:
+            #        log.debug("received package from outside....")
+            #    else:
+            #        log.debug("dropping packet from outside... no dst port")
 
-                # change the source ip and port of this packet
-                #tcp.srcport = port
-                self.send_outpacket(event, ip.dstip, port)
+            ## if syn packet
+            #if tcp.SYN == True and tcp.ACK == False:
+            #    # if inside
+            #    if event.port != 4:
+            #        # create a new connection
+            #        self.natmap.add(ip.srcip, tcp.srcport)
+            #        dstport = self.natmap.getDest(ip.srcip, tcp.srcport)
+            #        # set state to syn-ack
+            #        log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
+            #        self.send_outpacket(event, ip.dstip, dstport)
+            #    else: # if outside
+            #        # only create a new connection if the mapping exists...
+            #        log.debug("creating connection from outside...");
+            #elif tcp.SYN == True and tcp.ACK == True:
+            #    if event.port == 4:
+            #        if self.natmap.getSource(tcp.dstport) != (None, None):
+            #            log.debug("we got a syn ack message!!")
+            #            # response from server for the new connection
+            #            log.debug("creating flow from outside in!,")
+            #            print self.port_map, self.arp_table, tcp.seq
+            #            # setup a flow in the other direction
+            #            ip, ip_port = self.port_map[tcp.dstport]
+            #            mac, port = self.arp_table[ip]
 
-            elif tcp.SYN == True and tcp.ACK == True:
-                if tcp.dstport in self.port_map:
-                    log.debug("we got a syn ack message!!")
-                    # response from server for the new connection
-                    log.debug("creating flow from outside in!,")
-                    print self.port_map, self.arp_table, tcp.seq
-                    # setup a flow in the other direction
-                    ip, ip_port = self.port_map[tcp.dstport]
-                    mac, port = self.arp_table[ip]
+            #            self.send_inpacket(event, ip, ip_port, mac, port)
+            #        else:
+            #            log.debug("IGNORING !! packet from server...%s" % tcp)
+            #    else:
+            #        # inside going out...
+            #        log.debug("don't handle this case yet...")
+           
+            
+            #if tcp.SYN == True and tcp.ACK == False:
+            #    # create a new connection
+            #    log.debug("receive a SYN packet!!")
+            #    port = self.map_port(tcp)
+            #    self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport, CONNECTING)
+            #    log.debug("using port %s" % port)
 
-                    self.send_inpacket(event, ip, ip_port, mac, port)
+            #    # change the source ip and port of this packet
+            #    #tcp.srcport = port
+            #    self.send_outpacket(event, ip.dstip, port)
+
+            #elif tcp.SYN == True and tcp.ACK == True:
+            #    if tcp.dstport in self.port_map:
+            #        log.debug("we got a syn ack message!!")
+            #        # response from server for the new connection
+            #        log.debug("creating flow from outside in!,")
+            #        print self.port_map, self.arp_table, tcp.seq
+            #        # setup a flow in the other direction
+            #        ip, ip_port = self.port_map[tcp.dstport]
+            #        mac, port = self.arp_table[ip]
+
+            #        self.send_inpacket(event, ip, ip_port, mac, port)
+            #    else:
+            #        log.debug("IGNORING !! packet from server...%s" % tcp)
+            #elif tcp.SYN == False and tcp.ACK == True and event.port != 4:
+            #    # response from client to serer
+            #    # TODO set connection to established
+            #    log.debug("receive a ACK packet!!")
+            #    port = self.map_port(tcp)
+            #    self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport, ESTABLISHED)
+            #    log.debug("using port %s" % port)
+
+            #    # send the packet out
+            #    self.send_outpacket(event, ip.dstip, port)
+            #else:
+            #    if tcp.FIN == True:
+            #        log.debug("WE GOT A FIN MESSAGE!!")
+            #    if tcp.FIN == True and tcp.ACK == True:
+            #        log.debug("we got a fin ack!!")
+
+            #    if event.port != 4: # and tcp.SYN == True
+            #        log.debug("receive a SYN packet!!")
+            #        port = self.map_port(tcp)
+            #        self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport)
+            #        log.debug("using port %s" % port)
+
+            #        self.send_outpacket(event, ip.dstip, port) 
+            #    elif event.port == 4:
+            #        log.debug("creating flow from outside in!,")
+            #        print self.port_map, self.arp_table, tcp.seq
+            #        # setup a flow in the other direction
+            #        ip, ip_port = self.port_map[tcp.dstport]
+            #        mac, port = self.arp_table[ip]
+
+            #        self.send_inpacket(event, ip, ip_port, mac, port)
+
+            # from inside
+            if event.port != 4:
+                # create one if correct packet
+                con = self.natmap.getConIp(ip.srcip, tcp.srcport)
+                if con == None:
+                    # can we create a new connection?
+                    # yes (syn from client) or ?
+                    if tcp.SYN == True and tcp.ACK == False:
+                        # create a new connection
+                        dstport = self.map_port(tcp.srcport)
+                        con = connection(ip.srcip, tcp.srcport, dstport)
+                        self.natmap.add(con)
+                        log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
+                        self.send_outpacket(event, ip.dstip, dstport)
+                    else: # no
+                        # ignore this packet
+                        log.debug("DROPPING PACKET AT START OF CONNECTION!!")
+               
+                else:  # connection exists
+                    log.debug("connection already exists")
+                    # depending on the state we are in 
+                    # if waiting for syn ack
+                    if con.state == SYN_ACK_RECV:
+                        if tcp.ACK == True and tcp.SYN == False:
+                            # update state     
+                            con.state = ESTABLISHED
+                            self.natmap.add(con)
+                            # forward message
+                    elif con.state == ESTABLISHED:
+                        # check for fin
+                        if tcp.FIN == True:
+                            log.debug("client sent fin!!")
+                            # update state to closing
+                        log.debug("established")
+                    else:
+                        log.debug("in unhandled state...")
+                        return
+
+                    log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
+                    self.send_outpacket(event, ip.dstip, con.dstport)
+                        
+                    # if waiting for client ack
+                        # if this is an ack from client
+                            # forward message 
+                            # update state to established    
+                        # check for fin
+                            # update state to closing
+                        # forward the message 
+                    # if closing
+                        # if waiting for ack
+                            # remove connection
+
+            else:# from outside
+                # if the connection does not exist
+                con = self.natmap.getCon(tcp.dstport)
+                if con == None:
+                    # drop the packet
+                    log.debug("No mapping for this packet from outside....")
                 else:
-                    log.debug("IGNORING !! packet from server...%s" % tcp)
-            elif tcp.SYN == False and tcp.ACK == True and event.port != 4:
-                # response from client to serer
-                # TODO set connection to established
-                log.debug("receive a ACK packet!!")
-                port = self.map_port(tcp)
-                self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport)
-                log.debug("using port %s" % port)
+                    if con.state == SYN_SENT:
+                        if tcp.SYN == True and tcp.ACK == True:
+                            con.state = SYN_ACK_RECV
+                            self.natmap.add(con)
+                    elif con.state == ESTABLISHED:
+                        log.debug("established")
+                        if tcp.FIN == True:
+                            log.debug("sever sent fin!!!")
+                    else:
+                        log.debug("in unhandled state...");    
+                        return
+                    # send out the packet
+                    log.debug("sending server packet...")
+                    mac, port = self.arp_table[con.ip]
+                    self.send_inpacket(event, con.ip, con.port, mac, port)
 
-                # send the packet out
-                self.send_outpacket(event, ip.dstip, port)
-            else:
-                if tcp.FIN == True:
-                    log.debug("WE GOT A FIN MESSAGE!!")
-                if tcp.FIN == True and tcp.ACK == True:
-                    log.debug("we got a fin ack!!")
-
-                if event.port != 4: # and tcp.SYN == True
-                    log.debug("receive a SYN packet!!")
-                    port = self.map_port(tcp)
-                    self.port_map[port] = (packet.find('ipv4').srcip, tcp.srcport)
-                    log.debug("using port %s" % port)
-
-                    self.send_outpacket(event, ip.dstip, port)
-
-                elif event.port == 4:
-                    log.debug("creating flow from outside in!,")
-                    print self.port_map, self.arp_table, tcp.seq
-                    # setup a flow in the other direction
-                    ip, ip_port = self.port_map[tcp.dstport]
-                    mac, port = self.arp_table[ip]
-
-                    self.send_inpacket(event, ip, ip_port, mac, port)
 
         # ignore UDP messages....
 
