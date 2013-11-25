@@ -20,6 +20,8 @@ log = core.getLogger()
 TCP_ESTABLISHED_TIMEOUT = 7
 TCP_TRANSITORY_TIMEOUT = 3
 
+ARP_TIMEOUT = 2000
+
 # states
 ESTABLISHED = 'established'
 SYN_SENT = 'syn_sent'
@@ -151,9 +153,102 @@ class nat(EventMixin):
         handle arp replies
         '''
         arp_req = packet.next
-        if arp_req.opcode == arp.REPLY and arp_req.hwdst == self.outmac:
-            log.debug("updating arp table for %s" % arp_req.protosrc)
-            self.arp_table[arp_req.protosrc] = (packet.src, event.port)
+        if arp_req.prototype == arp.PROTO_TYPE_IP and arp_req.hwtype == arp.HW_TYPE_ETHERNET and arp_req.protosrc != 0:
+            log.debug("ARP proto source..." + str(arp_req.protosrc) + str(arp_req.protodst))
+
+            if arp_req.opcode == arp.REPLY and arp_req.hwdst == self.outmac:
+                log.debug("updating arp table for %s" % arp_req.protosrc)
+                self.arp_table[arp_req.protosrc] = (packet.src, event.port, time.time() * ARP_TIMEOUT)
+                return
+
+            # update the arp table
+            self.arp_table[arp_req.protosrc] = (packet.src, event.port, time.time() * ARP_TIMEOUT)
+
+            # see if we can handle the arp request (we know the dst and it hasn't expired)
+            if arp_req.opcode == arp.REQUEST:
+                if arp_req.protodst in self.arp_table and self.arp_table[arp_req.protodst][2] > time.time():
+                    # we can respond to the ARP request
+                    log.debug("responding to ARP request...")
+
+                    # create the arp response packet
+                    arp_res = arp()
+                    arp_res.hwtype = arp_req.hwtype
+                    arp_res.prototype = arp_req.prototype
+                    arp_res.hwlen = arp_req.hwlen
+                    arp_res.protolen = arp_req.protolen
+                    arp_res.opcode = arp.REPLY
+                    arp_res.hwdst = arp_req.hwsrc
+                    arp_res.protodst = arp_req.protosrc
+                    arp_res.protosrc = arp_req.protodst
+                    arp_res.hwsrc = self.arp_table[arp_req.protodst][1]
+
+                    # create an ethernet package that contains the arp response we created above
+                    e = ethernet(type=packet.type, src=self.outmac, dst=arp_req.hwsrc)
+                    e.set_payload(arp_res)
+                    log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
+
+                    # send the ARP response
+                    msg = of.ofp_packet_out()
+                    msg.data = e.pack()
+                    msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+                    msg.in_port = event.port
+                    event.connection.send(msg)
+                    return
+
+                elif arp_req.protodst == IPAddr('10.0.1.1'):
+                    # handle client side
+                    # create the arp response packet
+                    self.send_arpResponse(arp_req, event, packet, self.connection.ports[event.port].hw_addr)
+                    return
+                elif arp_req.protodst == IPAddr('172.64.3.1'):
+                    # handle server side
+                    log.debug("repsonding to arp for server ip, %s" % event.port)
+                    self.send_arpResponse(arp_req, event, packet, self.connection.ports[event.port].hw_addr)
+                    return
+
+        # we don't know where this mac is, flood the packet
+        if event.port == 4:
+            log.debug("flooding ARP packet!" + str(self.arp_table))
+            msg = of.ofp_packet_out()
+            msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+            msg.buffer_id = event.ofp.buffer_id
+            msg.in_port = event.port
+            self.connection.send(msg)
+        else:
+            log.debug("flooding client arp packet")
+            msg = of.ofp_packet_out()
+            for i in range(0,4):
+                msg.actions.append(of.ofp_action_output(port = i ))
+            msg.buffer_id = event.ofp.buffer_id
+            msg.in_port = event.port
+            self.connection.send(msg)
+        return 
+
+    def send_arpResponse(self, arp_req, event, packet, mac):
+        # create the arp response packet
+        arp_res = arp()
+        arp_res.hwtype = arp_req.hwtype
+        arp_res.prototype = arp_req.prototype
+        arp_res.hwlen = arp_req.hwlen
+        arp_res.protolen = arp_req.protolen
+        arp_res.opcode = arp.REPLY
+        arp_res.hwdst = arp_req.hwsrc
+        arp_res.protodst = arp_req.protosrc
+        arp_res.protosrc = arp_req.protodst
+        arp_res.hwsrc = mac
+
+        # create an ethernet package that contains the arp response we created above
+        e = ethernet(type=packet.type, src=mac, dst=arp_req.hwsrc)
+        e.set_payload(arp_res)
+        log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
+
+        # send the ARP response
+        msg = of.ofp_packet_out()
+        msg.data = e.pack()
+        msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+        msg.in_port = event.port
+        event.connection.send(msg)
+
 
     def send_outpacket(self, event, dstip, port):
         ''' 
@@ -223,16 +318,17 @@ class nat(EventMixin):
         # parse the input packet
         packet = event.parse()
 
+        log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
         # handle arp
         if isinstance(packet.next, arp):
             return self.handle_arp(event, packet)
 
-        log.debug("received packet %s %s %s %s" % (str(packet.src), str(packet.dst), str(event.port), str(packet.next)))
 
         ip = packet.find('ipv4')
         tcp = packet.find('tcp')
         if tcp and ip:
-            self.arp_table[packet.find('ipv4').srcip] = (packet.src, event.port)
+            print self.arp_table
+            self.arp_table[packet.find('ipv4').srcip] = (packet.src, event.port, time.time() * ARP_TIMEOUT)
             # we got a tcp packet!
             log.debug("received a tcp packet! %s" % tcp)
 
@@ -451,7 +547,7 @@ class nat(EventMixin):
 
                     con.touch()
                     self.natmap.add(con)
-                    mac, port = self.arp_table[con.ip]
+                    mac, port, mytime = self.arp_table[con.ip]
                     self.send_inpacket(event, con.ip, con.port, mac, port)
 
         # ignore UDP messages....
