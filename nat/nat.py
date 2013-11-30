@@ -360,8 +360,8 @@ class nat(EventMixin):
         #flow.match.in_port = 4
         #flow.match.tp_src = tcp.srcport
         flow.match.tp_dst = tcp.dstport
-        #flow.match.dl_src = packet.mac
-        #flow.match.nw_src = ip.srcip
+        flow.match.dl_src = packet.src
+        flow.match.nw_src = ip.srcip
         flow.match.nw_dst = self.eth2_ip
 
         # set the timeout value
@@ -472,7 +472,8 @@ class nat(EventMixin):
                     self.send_outpacket(event, ip.dstip, con.dstport)
                     return
                         
-            else:# from outside
+            elif ip.dstip == self.eth2_ip:# from outside
+                # make sure this tcp packet is for us
                 # if the connection does not exist
                 con = self.natmap.getCon(tcp.dstport)
                 if con == None:
@@ -493,12 +494,15 @@ class nat(EventMixin):
                     elif con.state == ESTABLISHED:
                         log.debug("creating flow from server established!!")
                         # make a flow...
-                        # todo deal with 
 
                         #con.touch()
-                        #con.num_flows += 1
+                        con.num_flows += 1
                         #self.natmap.add(con)
 
+                        # TODO create a new connection in this case...
+                        # I feel like more than just this should be done...
+                        # if we setup our flows right this should not be required
+                        # this seems to work, so we could get away with removing this
                         self.create_in_flow2(event, packet, tcp, ip, con)
                         #mac, port, mytime = self.arp_table[con.ip]
                         #self.send_inpacket(event, con.ip, con.port, mac, port)
