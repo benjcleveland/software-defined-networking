@@ -277,68 +277,56 @@ class nat(EventMixin):
         #print msg
         self.connection.send(msg)
 
-    def create_flow(self, event, packet, tcp, ip, port, data):
+    def create_flow(self, event, packet, tcp, ip, con, data=None, out_dir=True):
+        '''
+        create a new flow
+        '''
         flow = of.ofp_flow_mod()
-        flow.data = data
-        flow.buffer_id = data.buffer_id
-        flow.in_port = event.port
+
+        if data != None:
+            flow.data = data
+            flow.buffer_id = data.buffer_id
+            flow.in_port = event.port
 
         #flow.match = of.ofp_match.from_packet(packet)
         flow.match.nw_proto = 6
         flow.match.dl_type = 0x800
-        flow.match.in_port = event.port
-        flow.match.tp_src = tcp.srcport
-        flow.match.dl_src = packet.src
-        flow.match.nw_src = ip.srcip
 
         # set the timeout value
         flow.idle_timeout = TCP_ESTABLISHED_TIMEOUT
         flow.flags |= of.OFPFF_SEND_FLOW_REM
         flow.flags |= of.OFPFF_CHECK_OVERLAP
 
-        # todo -  we should make sure this entry exists for using this...
-        flow.actions.append(of.ofp_action_tp_port.set_src(port))
-        flow.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
-        flow.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[ip.dstip][0]))
-        flow.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
+        if out_dir == True:
+            flow.match.in_port = event.port
+            flow.match.tp_src = tcp.srcport
+            #flow.match.dl_src = packet.src
+            flow.match.nw_src = ip.srcip
 
-        flow.actions.append(of.ofp_action_output(port = 4))
+            # actions for going out
+            flow.actions.append(of.ofp_action_tp_port.set_src(con.dstport))
+            flow.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
+            flow.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[ip.dstip][0]))
+            flow.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
+            flow.actions.append(of.ofp_action_output(port = 4))
+        else:
+            flow.match.in_port = 4
+            #flow.match.tp_src = tcp.dstport
+            flow.match.tp_dst = con.dstport
+            #flow.match.dl_src = src_mac
+            #flow.match.nw_src = ip.dstip
+            flow.match.nw_dst = self.eth2_ip
+
+            # actions for coming in
+            mac, port, mytime = self.arp_table[con.ip]
+
+            flow.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
+            flow.actions.append(of.ofp_action_tp_port.set_dst(con.port))
+            flow.actions.append(of.ofp_action_dl_addr.set_dst(mac))
+            flow.actions.append(of.ofp_action_output(port = port))
 
         print flow
         log.debug("creating out flow, %s" % event.port)
-        self.connection.send(flow)
-
-    def create_in_flow(self, event, packet, tcp, ip, con):
-        flow = of.ofp_flow_mod()
-        #flow.data = None
-        #flow.in_port = 4
-
-        src_mac, port, t = self.arp_table[ip.dstip]
-
-        #flow.match = of.ofp_match.from_packet(packet)
-        flow.match.nw_proto = 6
-        flow.match.dl_type = 0x800
-        flow.match.in_port = 4
-        #flow.match.tp_src = tcp.dstport
-        flow.match.tp_dst = con.dstport
-        #flow.match.dl_src = src_mac
-        #flow.match.nw_src = ip.dstip
-        flow.match.nw_dst = self.eth2_ip
-
-        # set the timeout value
-        flow.idle_timeout = TCP_ESTABLISHED_TIMEOUT
-        flow.flags |= of.OFPFF_SEND_FLOW_REM
-        flow.flags |= of.OFPFF_CHECK_OVERLAP
-
-        mac, port, mytime = self.arp_table[con.ip]
-
-        flow.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
-        flow.actions.append(of.ofp_action_tp_port.set_dst(con.port))
-
-        flow.actions.append(of.ofp_action_dl_addr.set_dst(mac))
-        flow.actions.append(of.ofp_action_output(port = port))
-
-        print flow
         self.connection.send(flow)
 
     def create_in_flow2(self, event, packet, tcp, ip, con):
@@ -346,15 +334,6 @@ class nat(EventMixin):
         flow.data = event.ofp
         flow.buffer_id = event.ofp.buffer_id
         #flow.in_port = event.port
-
-        #flow.match = of.ofp_match.from_packet(packet)
-        #flow.match.nw_proto = 6
-        #flow.match.dl_type = 0x800
-        #flow.match.in_port = event.port
-        #flow.match.tp_src = tcp.srcport
-        #flow.match.tp_dst = tcp.dstport
-        #flow.match.dl_src = packet.src
-        #flow.match.nw_src = ip.srcip
 
         flow.match.nw_proto = 6
         flow.match.dl_type = 0x800
@@ -396,7 +375,6 @@ class nat(EventMixin):
         msg.actions.append(of.ofp_action_output(port = port))
         #print msg
         self.connection.send(msg)
-
 
     def map_port(self, port):
         '''
@@ -460,8 +438,11 @@ class nat(EventMixin):
                             con.touch()
                             log.debug("creating flow for connection!")
 
-                            self.create_in_flow(event, packet, tcp, ip, con)
-                            self.create_flow(event, packet, tcp, ip, con.dstport, event.ofp)
+                            #self.create_in_flow(event, packet, tcp, ip, con)
+                            self.create_flow(event, packet, tcp, ip, con, out_dir=False)
+                            self.create_flow(event, packet, tcp, ip, con, event.ofp)
+
+                            #self.send_outpacket(event, ip.dstip, con.dstport)
                             con.state = ESTABLISHED
                             self.natmap.add(con)
                             log.debug("\n\n\n\n")
@@ -475,7 +456,7 @@ class nat(EventMixin):
                             log.debug("creating flow for connection!")
 
                             self.create_in_flow(event, packet, tcp, ip, con)
-                            self.create_flow(event, packet, tcp, ip, con.dstport, event.ofp)
+                            self.create_flow(event, packet, tcp, ip, con, event.ofp)
                             con.state = ESTABLISHED
                             self.natmap.add(con)
                             log.debug("\n\n\n\n")
