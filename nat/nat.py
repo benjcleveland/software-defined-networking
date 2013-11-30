@@ -38,6 +38,7 @@ class connection():
         self.client_fin = False
         self.server_fin = False
         self.last_time = time.time()
+        self.num_flows = 0
 
     def __str__(self):
         return str(self.ip) + ':' + str(self.port)
@@ -308,15 +309,6 @@ class nat(EventMixin):
         msg.data = event.ofp
         msg.in_port = event.port
 
-        #msg.match.nw_proto = 6
-        #msg.match.in_port = event.port
-        #msg.match.dl_src = packet.src
-        #msg.match.tp_src = tcp.srcport
-        #msg.match.tp_dst = tcp.dstport
-        #msg.match.dl_type = 0x800
-        #msg.match.nw_src = packet.find('ipv4').srcip
-        #msg.match.nw_src = 
-
         #msg.match = of.ofp_match.from_packet(packet)
         #msg.actions.append(of.ofp_action_dl_addr.set_src(self.mac))
         #msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth1_ip))
@@ -512,6 +504,7 @@ class nat(EventMixin):
                         if tcp.ACK == True and tcp.SYN == False:
                             # update state     
                             con.state = ESTABLISHED
+                            con.num_flows += 1
                             # forward message
                             # TODO - create the flow for this connection 
                             # do this in both directions?
@@ -594,10 +587,15 @@ class nat(EventMixin):
         log.debug("received flow removed event! %s" % dir(event.ofp))
         log.debug(event.ofp.show())
         match = event.ofp.match
+        con = None
         if match.in_port != 4:
             # out going flow
             con = self.natmap.getConIp(match.nw_src, match.tp_src)
             print con
+            con.num_flows -= 1
+
+        # if we can remove this connection
+        if con.num_flows == 0:
             self.natmap.remove(con)
             log.debug("removed connection")
 
