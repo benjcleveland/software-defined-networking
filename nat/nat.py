@@ -17,7 +17,7 @@ log = core.getLogger()
 # TCP timeouts in seconds
 #TCP_ESTABLISHED_TIMEOUT = 7440
 #TCP_TRANSITORY_TIMEOUT = 300
-TCP_ESTABLISHED_TIMEOUT = 7
+TCP_ESTABLISHED_TIMEOUT = 70
 TCP_TRANSITORY_TIMEOUT = 3
 
 ARP_TIMEOUT = 2000
@@ -276,12 +276,13 @@ class nat(EventMixin):
         #print msg
         self.connection.send(msg)
 
-    def create_flow(self, event, packet, tcp, ip, port):
+    def create_flow(self, event, packet, tcp, ip, port, data):
         flow = of.ofp_flow_mod()
-        flow.data = event.ofp
+        flow.data = data
+        flow.buffer_id = data.buffer_id
         flow.in_port = event.port
 
-        #msg.match = of.ofp_match.from_packet(packet)
+        #flow.match = of.ofp_match.from_packet(packet)
         flow.match.nw_proto = 6
         flow.match.dl_type = 0x800
         flow.match.in_port = event.port
@@ -292,14 +293,78 @@ class nat(EventMixin):
         # set the timeout value
         flow.idle_timeout = TCP_ESTABLISHED_TIMEOUT
         flow.flags |= of.OFPFF_SEND_FLOW_REM
+        flow.flags |= of.OFPFF_CHECK_OVERLAP
 
         # todo -  we should make sure this entry exists for using this...
+        flow.actions.append(of.ofp_action_tp_port.set_src(port))
+        flow.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
         flow.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[ip.dstip][0]))
         flow.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
-        flow.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
-        flow.actions.append(of.ofp_action_tp_port.set_src(port))
 
         flow.actions.append(of.ofp_action_output(port = 4))
+
+        print flow
+        log.debug("creating out flow, %s" % event.port)
+        self.connection.send(flow)
+
+    def create_in_flow(self, event, packet, tcp, ip, con):
+        flow = of.ofp_flow_mod()
+        #flow.data = None
+        #flow.in_port = 4
+
+        src_mac, port, t = self.arp_table[ip.dstip]
+
+        #flow.match = of.ofp_match.from_packet(packet)
+        flow.match.nw_proto = 6
+        flow.match.dl_type = 0x800
+        flow.match.in_port = 4
+        #flow.match.tp_src = tcp.dstport
+        flow.match.tp_dst = con.dstport
+        #flow.match.dl_src = src_mac
+        flow.match.nw_src = ip.dstip
+        flow.match.nw_dst = self.eth2_ip
+
+        # set the timeout value
+        flow.idle_timeout = TCP_ESTABLISHED_TIMEOUT
+        flow.flags |= of.OFPFF_SEND_FLOW_REM
+
+        mac, port, mytime = self.arp_table[con.ip]
+
+        flow.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
+        flow.actions.append(of.ofp_action_tp_port.set_dst(con.port))
+
+        flow.actions.append(of.ofp_action_dl_addr.set_dst(mac))
+        flow.actions.append(of.ofp_action_output(port = port))
+
+        print flow
+        self.connection.send(flow)
+
+    def create_in_flow2(self, event, packet, tcp, ip, con):
+        flow = of.ofp_flow_mod()
+        flow.data = event.ofp
+        flow.in_port = event.port
+
+        #flow.match = of.ofp_match.from_packet(packet)
+        flow.match.nw_proto = 6
+        flow.match.dl_type = 0x800
+        flow.match.in_port = event.port
+        flow.match.tp_src = tcp.srcport
+        flow.match.tp_dst = tcp.dstport
+        flow.match.dl_src = packet.src
+        flow.match.nw_src = ip.srcip
+
+        # set the timeout value
+        flow.idle_timeout = TCP_ESTABLISHED_TIMEOUT
+        flow.flags |= of.OFPFF_SEND_FLOW_REM
+        flow.flags |= of.OFPFF_CHECK_OVERLAP
+
+        mac, port, mytime = self.arp_table[con.ip]
+
+        flow.actions.append(of.ofp_action_tp_port.set_dst(con.port))
+        flow.actions.append(of.ofp_action_dl_addr.set_dst(mac))
+        flow.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
+        flow.actions.append(of.ofp_action_output(port = port))
+
         #print msg
         self.connection.send(flow)
 
@@ -341,7 +406,6 @@ class nat(EventMixin):
         # handle arp
         if isinstance(packet.next, arp):
             return self.handle_arp(event, packet)
-
 
         ip = packet.find('ipv4')
         tcp = packet.find('tcp')
@@ -497,47 +561,33 @@ class nat(EventMixin):
                         log.debug("DROPPING PACKET AT START OF CONNECTION!!")
                
                 else:  # connection exists
-                    log.debug("connection already exists, %s" % con.state)
+                    log.debug("connection already exists, %s %s" % (con.state, event.port))
                     # depending on the state we are in 
                     # if waiting for syn ack
                     if con.state == SYN_ACK_RECV:
                         if tcp.ACK == True and tcp.SYN == False:
                             # update state     
-                            con.state = ESTABLISHED
-                            con.num_flows += 1
+                            con.num_flows += 2
                             # forward message
                             # TODO - create the flow for this connection 
                             # do this in both directions?
                             # a connection has been established - create a flow
+                            con.touch()
                             log.debug("creating flow for connection!")
-                            self.create_flow(event, packet, tcp, ip, con.dstport)
+
+
+                            self.create_in_flow(event, packet, tcp, ip, con)
+                            self.create_flow(event, packet, tcp, ip, con.dstport, event.ofp)
+                            con.state = ESTABLISHED
+                            self.natmap.add(con)
+                            log.debug("\n\n\n\n")
+                            return
                     elif con.state == ESTABLISHED:
-                        # check for fin
-                        if tcp.FIN == True:
-                            log.debug("client sent fin!!")
-                            # update state to closing
-                            con.state = CLOSING
-                        log.debug("established")
-                    elif con.state == CLOSING:
-                        if tcp.FIN == True and tcp.ACK == False:
-                            log.debug("client sent fin!!")
-                            # update state to closing
-                            con.state = CLOSING
-                        if tcp.ACK == True:
-                            # client closed
-                            if con.server_fin and con.client_fin:
-                                # remove the connection
-                                log.debug("removing connection client")
-                                self.natmap.remove(con)
-                    else:
-                        log.debug("in unhandled state...")
-                        return
-
-                    con.touch()
-                    self.natmap.add(con)
-
-                    #log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
-                    #self.send_outpacket(event, ip.dstip, con.dstport)
+                        log.debug("AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
+                        #return
+                    log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
+                    self.send_outpacket(event, ip.dstip, con.dstport)
+                    return
                         
             else:# from outside
                 # if the connection does not exist
@@ -549,35 +599,33 @@ class nat(EventMixin):
                     if con.state == SYN_SENT:
                         if tcp.SYN == True and tcp.ACK == True:
                             con.state = SYN_ACK_RECV
-                    elif con.state == ESTABLISHED:
-                        log.debug("established")
 
-                        if tcp.FIN == True:
-                            log.debug("sever sent fin!!!")
-                            con.state = CLOSING
-                            con.server_fin = True
-                    elif con.state == CLOSING:
-                        if tcp.FIN == True:
-                            log.debug("sever sent fin!!!")
-                            con.state = CLOSING
-                            con.server_fin = True
-                        if tcp.ACK == True:
-                            # server closed
-                            if con.server_fin and con.client_fin:
-                                log.debug("removing connection server")
-                                self.natmap.remove(con)
+                            # send out the packet
+                            log.debug("sending server packet...")
+
+                            con.touch()
+                            self.natmap.add(con)
+                            mac, port, mytime = self.arp_table[con.ip]
+                            self.send_inpacket(event, con.ip, con.port, mac, port)
+                    elif con.state == ESTABLISHED:
+                        log.debug("creating flow from server established!!")
+                        # make a flow...
+
+                        #con.touch()
+                        #con.num_flows += 1
+                        #self.natmap.add(con)
+
+                        #self.create_in_flow2(event, packet, tcp, ip, con)
+                        #mac, port, mytime = self.arp_table[con.ip]
+                        #self.send_inpacket(event, con.ip, con.port, mac, port)
                     else:
                         log.debug("in unhandled state...");    
                         return
-                    # send out the packet
-                    log.debug("sending server packet...")
-
-                    con.touch()
-                    self.natmap.add(con)
-                    mac, port, mytime = self.arp_table[con.ip]
-                    self.send_inpacket(event, con.ip, con.port, mac, port)
 
         # ignore UDP messages....
+
+
+        # TODO flood messages if from inside network...
 
     def _handle_FlowRemoved(self, event):
         '''
@@ -591,13 +639,18 @@ class nat(EventMixin):
         if match.in_port != 4:
             # out going flow
             con = self.natmap.getConIp(match.nw_src, match.tp_src)
-            print con
-            con.num_flows -= 1
+        else:
+            con = self.natmap.getCon(match.tp_dst)
 
-        # if we can remove this connection
-        if con.num_flows == 0:
-            self.natmap.remove(con)
-            log.debug("removed connection")
+        if con != None:
+            con.num_flows -= 1
+            print con.num_flows
+            # if we can remove this connection
+            if con.num_flows == 0:
+                self.natmap.remove(con)
+                log.debug("removed connection")
+            else:
+                self.natmap.add(con)
 
 class nat_starter(EventMixin):
 
