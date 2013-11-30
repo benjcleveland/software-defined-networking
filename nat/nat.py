@@ -25,6 +25,7 @@ ARP_TIMEOUT = 2000
 # states
 ESTABLISHED = 'established'
 SYN_SENT = 'syn_sent'
+SIMULTANEOUS_OPEN = 'sim open!'
 SYN_ACK_RECV = 'syn ack recv'
 CONNECTING = 'connecting'
 CLOSING = 'closing'
@@ -342,8 +343,8 @@ class nat(EventMixin):
 
     def create_in_flow2(self, event, packet, tcp, ip, con):
         flow = of.ofp_flow_mod()
-        #flow.data = event.ofp
-        #flow.buffer_id = event.ofp.buffer_id
+        flow.data = event.ofp
+        flow.buffer_id = event.ofp.buffer_id
         #flow.in_port = event.port
 
         #flow.match = of.ofp_match.from_packet(packet)
@@ -355,13 +356,13 @@ class nat(EventMixin):
         #flow.match.dl_src = packet.src
         #flow.match.nw_src = ip.srcip
 
-        #flow.match.nw_proto = 6
-        #flow.match.dl_type = 0x800
-        #flow.match.in_port = 4
+        flow.match.nw_proto = 6
+        flow.match.dl_type = 0x800
+        flow.match.in_port = 4
         #flow.match.tp_src = tcp.srcport
         flow.match.tp_dst = tcp.dstport
-        flow.match.dl_src = packet.src
-        flow.match.nw_src = ip.srcip
+        #flow.match.dl_src = packet.src
+        #flow.match.nw_src = ip.srcip
         flow.match.nw_dst = self.eth2_ip
 
         # set the timeout value
@@ -465,6 +466,20 @@ class nat(EventMixin):
                             self.natmap.add(con)
                             log.debug("\n\n\n\n")
                             return
+                    elif con.state == SIMULTANEOUS_OPEN:
+                        if tcp.ACK == True and tcp.SYN == True:
+                            # TODO - clean this up a little bit...
+                            con.num_flows += 2
+                            # forward message
+                            con.touch()
+                            log.debug("creating flow for connection!")
+
+                            self.create_in_flow(event, packet, tcp, ip, con)
+                            self.create_flow(event, packet, tcp, ip, con.dstport, event.ofp)
+                            con.state = ESTABLISHED
+                            self.natmap.add(con)
+                            log.debug("\n\n\n\n")
+                            return
                     elif con.state == ESTABLISHED:
                         log.debug("AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
                         #return
@@ -477,10 +492,19 @@ class nat(EventMixin):
                 # if the connection does not exist
                 con = self.natmap.getCon(tcp.dstport)
                 if con == None:
-                    # drop the packet
+                    # silently drop the packet
                     log.debug("No mapping for this packet from outside....")
+                    return
                 else:
                     if con.state == SYN_SENT:
+                        if tcp.SYN == True and tcp.ACK == False:
+                            # support simultaneous open
+                            con.touch()
+                            con.state = SIMULTANEOUS_OPEN
+                            self.natmap.add(con)
+                            mac, port, mytime = self.arp_table[con.ip]
+                            self.send_inpacket(event, con.ip, con.port, mac, port)
+                            
                         if tcp.SYN == True and tcp.ACK == True:
                             con.state = SYN_ACK_RECV
 
@@ -503,17 +527,30 @@ class nat(EventMixin):
                         # I feel like more than just this should be done...
                         # if we setup our flows right this should not be required
                         # this seems to work, so we could get away with removing this
-                        self.create_in_flow2(event, packet, tcp, ip, con)
+                        #self.create_in_flow2(event, packet, tcp, ip, con)
                         #mac, port, mytime = self.arp_table[con.ip]
                         #self.send_inpacket(event, con.ip, con.port, mac, port)
                     else:
                         log.debug("in unhandled state...");    
                         return
 
+        if ip and ip.srcip.inNetwork('10.0.1.0/24') == True:
+            # flood the message to the internal clients
+            self.flood_packet(event)
+
         # ignore UDP messages....
 
 
-        # TODO flood messages if from inside network...
+    def flood_packet(self, event):
+        '''
+        Flood the given event to just the client links
+        '''
+        msg = of.ofp_packet_out()
+        for i in range(0,4):
+            msg.actions.append(of.ofp_action_output(port = i ))
+        msg.buffer_id = event.ofp.buffer_id
+        msg.in_port = event.port
+        self.connection.send(msg)
 
     def _handle_FlowRemoved(self, event):
         '''
