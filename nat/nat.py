@@ -483,7 +483,8 @@ class nat(EventMixin):
                             self.send_packet(event, con.ip, con, out_dir = False)
                             
                         if tcp.SYN == True and tcp.ACK == True:
-                            con.state = SYN_ACK_RECV
+                            if con.state != SIMULTANEOUS_OPEN:
+                                con.state = SYN_ACK_RECV
 
                             # send out the packet
                             log.debug("sending server packet...")
