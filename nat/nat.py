@@ -87,7 +87,7 @@ class natmap():
         return self.port_map.iteritems()
 
 class nat(EventMixin):
-    def __init__(self, connection, firewall):
+    def __init__(self, connection):
         # add the nat to this switch
         self.connection = connection
         self.listenTo(connection)
@@ -99,8 +99,6 @@ class nat(EventMixin):
         self.arp_table = {} # ip to mac,port
         self.natmap = natmap()
         
-        print firewall
-
         #todo...
         self.send_arp(IPAddr('172.64.3.21'))
         self.send_arp(IPAddr('172.64.3.22'))
@@ -567,11 +565,19 @@ class nat_starter(EventMixin):
         log.debug("Connection %s" % (event.connection))
         if event.connection.dpid != 1:
             log.debug("Starting nat on %s" % (event.connection))
-            nat(event.connection, self.firewall)
+            nat(event.connection)
         else:
             log.debug("Starting learning switch on %s" % (event.connection))
             learningswitch.LearningSwitch(event.connection)
 
-def launch(firewall=False):
+    def _handle_PacketIn(self, event):
+        ip = event.parsed.find('ipv4')
+        print event, ip, self.firewall
+        if self.firewall != None and ip and ip.dstip == IPAddr('172.64.3.22'):
+            log.debug('dropping packet because of firewall')
+            event.halt = True
+            return 
+
+def launch(firewall=None):
     # start the nat
     core.registerNew(nat_starter, firewall)
