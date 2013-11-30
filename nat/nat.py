@@ -251,29 +251,28 @@ class nat(EventMixin):
         msg.in_port = event.port
         event.connection.send(msg)
 
-    def send_outpacket(self, event, dstip, port):
+    def send_packet(self, event, dstip, con, out_dir=True):
         ''' 
         sends a packet out of the nat
         '''
         msg = of.ofp_packet_out()
-        #msg = of.ofp_flow_mod()
         msg.data = event.ofp
         msg.in_port = event.port
-
-        #msg.match = of.ofp_match.from_packet(packet)
-        #msg.match.nw_proto = 6
-        #msg.match.dl_type = 0x800
-        #msg.match.in_port = event.port
-        #msg.match.tp_src = tcp.srcport
-        #msg.match.dl_src = packet.src
-        #msg.match.nw_src = packet.find('ipv4').srcip
         
-        msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[dstip][0]))
-        msg.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
-        msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
-        msg.actions.append(of.ofp_action_tp_port.set_src(port))
-        # update the destination mac based on the IP?
-        msg.actions.append(of.ofp_action_output(port = 4))
+        if out_dir == True:
+            msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[dstip][0]))
+            msg.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
+            msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
+            msg.actions.append(of.ofp_action_tp_port.set_src(con.dstport))
+            msg.actions.append(of.ofp_action_output(port = 4))
+        else:
+            mac, port, mytime = self.arp_table[con.ip]
+
+            msg.actions.append(of.ofp_action_tp_port.set_dst(con.port))
+            msg.actions.append(of.ofp_action_dl_addr.set_dst(mac))
+            msg.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
+            msg.actions.append(of.ofp_action_output(port = port))
+
         #print msg
         self.connection.send(msg)
 
@@ -359,23 +358,6 @@ class nat(EventMixin):
         print flow
         self.connection.send(flow)
 
-    def send_inpacket(self, event, dstip, ip_port, mac, port):
-        #msg = of.ofp_flow_mod()
-        msg = of.ofp_packet_out()
-        msg.data = event.ofp
-        msg.in_port = event.port
-
-        #msg.match = of.ofp_match.from_packet(packet)
-        #msg.actions.append(of.ofp_action_dl_addr.set_src(self.mac))
-        #msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth1_ip))
-        msg.actions.append(of.ofp_action_tp_port.set_dst(ip_port))
-        msg.actions.append(of.ofp_action_dl_addr.set_dst(mac))
-        msg.actions.append(of.ofp_action_nw_addr.set_dst(dstip))
-        # update the destination mac based on the IP?
-        msg.actions.append(of.ofp_action_output(port = port))
-        #print msg
-        self.connection.send(msg)
-
     def map_port(self, port):
         '''
         return a port to map this connection to 
@@ -418,7 +400,7 @@ class nat(EventMixin):
                         con = connection(ip.srcip, tcp.srcport, dstport)
                         self.natmap.add(con)
                         log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
-                        self.send_outpacket(event, ip.dstip, dstport)
+                        self.send_packet(event, ip.dstip, con)
                     else: # no
                         # ignore this packet
                         log.debug("DROPPING PACKET AT START OF CONNECTION!!")
@@ -465,7 +447,7 @@ class nat(EventMixin):
                         log.debug("AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
                         #return
                     log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
-                    self.send_outpacket(event, ip.dstip, con.dstport)
+                    self.send_packet(event, ip.dstip, con)
                     return
                         
             elif ip.dstip == self.eth2_ip:# from outside
@@ -484,7 +466,7 @@ class nat(EventMixin):
                             con.state = SIMULTANEOUS_OPEN
                             self.natmap.add(con)
                             mac, port, mytime = self.arp_table[con.ip]
-                            self.send_inpacket(event, con.ip, con.port, mac, port)
+                            self.send_packet(event, con.ip, con, out_dir = False)
                             
                         if tcp.SYN == True and tcp.ACK == True:
                             con.state = SYN_ACK_RECV
@@ -495,13 +477,13 @@ class nat(EventMixin):
                             con.touch()
                             self.natmap.add(con)
                             mac, port, mytime = self.arp_table[con.ip]
-                            self.send_inpacket(event, con.ip, con.port, mac, port)
+                            self.send_packet(event, con.ip, con, out_dir = False)
                     elif con.state == ESTABLISHED:
                         log.debug("creating flow from server established!!")
                         # make a flow...
 
                         #con.touch()
-                        con.num_flows += 1
+                        #con.num_flows += 1
                         #self.natmap.add(con)
 
                         # TODO create a new connection in this case...
