@@ -79,12 +79,15 @@ class natmap():
         if ret != None:
             ret = self.port_map.get(ret, None)
         return ret
+    
+    def getPorts(self):
+        return self.rev_map.values()
 
     def __iter__(self):
         return self.port_map.iteritems()
 
 class nat(EventMixin):
-    def __init__(self, connection):
+    def __init__(self, connection, firewall):
         # add the nat to this switch
         self.connection = connection
         self.listenTo(connection)
@@ -95,6 +98,8 @@ class nat(EventMixin):
 
         self.arp_table = {} # ip to mac,port
         self.natmap = natmap()
+        
+        print firewall
 
         #todo...
         self.send_arp(IPAddr('172.64.3.21'))
@@ -109,11 +114,7 @@ class nat(EventMixin):
         log.debug("running cleanup connections!!")
         remove = []
         for port, con in self.natmap:
-            if con.state == ESTABLISHED:
-                if con.last_time + TCP_ESTABLISHED_TIMEOUT < time.time():
-                    log.debug("removing connection, established timeout")
-                    remove.append(con)
-            else:
+            if con.state != ESTABLISHED:
                 if con.last_time + TCP_TRANSITORY_TIMEOUT < time.time():
                     log.debug("removing connection, transitory timeout")
                     remove.append(con)
@@ -251,7 +252,7 @@ class nat(EventMixin):
         '''
         msg = of.ofp_packet_out()
         msg.data = event.ofp
-        msg.buffer_id = event.ofp.buffer_id
+        #msg.buffer_id = event.ofp.buffer_id
         msg.in_port = event.port
         
         if out_dir == True:
@@ -259,15 +260,15 @@ class nat(EventMixin):
         else:
             msg.actions = self.get_in_actions(con)
 
-        #print msg
+        print msg
         self.connection.send(msg)
 
     def get_out_actions(self, con, dstip):
         actions = []
-        actions.append(of.ofp_action_tp_port.set_src(con.dstport))
-        actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
-        actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[dstip][0]))
         actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
+        actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
+        actions.append(of.ofp_action_tp_port.set_src(con.dstport))
+        actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[dstip][0]))
         actions.append(of.ofp_action_output(port = 4))
 
         return actions
@@ -276,9 +277,9 @@ class nat(EventMixin):
         # actions for coming in
         mac, port, mytime = self.arp_table[con.ip]
 
-        actions.append(of.ofp_action_tp_port.set_dst(con.port))
-        actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
         actions.append(of.ofp_action_dl_addr.set_dst(mac))
+        actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
+        actions.append(of.ofp_action_tp_port.set_dst(con.port))
         actions.append(of.ofp_action_output(port = port))
         return actions
         
@@ -359,9 +360,20 @@ class nat(EventMixin):
         '''
         return a port to map this connection to 
         '''
-        # todo - this need to be a lot better...
-        dstport = port - 1000
-        return dstport
+        used_ports = self.natmap.getPorts()
+
+        dstport = port + 1
+        if dstport < 1024 or dstport >= 65534:
+            dstport = 1024
+
+        for count in range(0,2):
+            if dstport not in used_ports:
+                return dstport
+            dstport += 1
+            if dstport >= 65534:
+                dstport = 1024
+
+        return None
 
     def _handle_PacketIn(self, event):
         '''
@@ -385,7 +397,7 @@ class nat(EventMixin):
             log.debug("received a tcp packet! %s" % tcp)
 
             # from inside
-            if event.port != 4:
+            if event.port != 4 and ip.dstip.inNetwork('172.64.3.0/24'):
                 # create one if correct packet
                 con = self.natmap.getConIp(ip.srcip, tcp.srcport)
                 if con == None:
@@ -394,6 +406,8 @@ class nat(EventMixin):
                     if tcp.SYN == True and tcp.ACK == False:
                         # create a new connection
                         dstport = self.map_port(tcp.srcport)
+                        if dstport == None:
+                            log.error("Out of port mappings to used... dropping packet")
                         con = connection(ip.srcip, tcp.srcport, dstport)
                         self.natmap.add(con)
                         log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
@@ -434,8 +448,12 @@ class nat(EventMixin):
                             con.touch()
                             log.debug("creating flow for connection!")
 
-                            self.create_in_flow(event, packet, tcp, ip, con)
+                            #self.create_in_flow(event, packet, tcp, ip, con)
+                            #self.create_flow(event, packet, tcp, ip, con, event.ofp)
+
+                            self.create_flow(event, packet, tcp, ip, con, out_dir=False)
                             self.create_flow(event, packet, tcp, ip, con, event.ofp)
+
                             con.state = ESTABLISHED
                             self.natmap.add(con)
                             log.debug("\n\n\n\n")
@@ -449,14 +467,13 @@ class nat(EventMixin):
                         
             elif ip.dstip == self.eth2_ip:# from outside
                 # make sure this tcp packet is for us
-                # if the connection does not exist
                 con = self.natmap.getCon(tcp.dstport)
                 if con == None:
-                    # silently drop the packet
+                    # silently drop the packet since the connection doesn't exist yet...
                     log.debug("No mapping for this packet from outside....")
                     return
                 else:
-                    if con.state == SYN_SENT:
+                    if con.state == SYN_SENT or con.state == SIMULTANEOUS_OPEN:
                         if tcp.SYN == True and tcp.ACK == False:
                             # support simultaneous open
                             con.touch()
@@ -475,6 +492,8 @@ class nat(EventMixin):
                             self.natmap.add(con)
                             mac, port, mytime = self.arp_table[con.ip]
                             self.send_packet(event, con.ip, con, out_dir = False)
+                        log.debug("syn packet")
+                        return
                     elif con.state == ESTABLISHED:
                         log.debug("creating flow from server established!!")
                         # make a flow...
@@ -494,12 +513,12 @@ class nat(EventMixin):
                         log.debug("in unhandled state...");    
                         return
 
-        if ip and ip.srcip.inNetwork('10.0.1.0/24') == True:
+        if ip and ip.dstip.inNetwork('10.0.1.0/24') == True:
             # flood the message to the internal clients
+            log.debug("flooding packet on client network")
             self.flood_packet(event)
 
         # ignore UDP messages....
-
 
     def flood_packet(self, event):
         '''
@@ -539,18 +558,19 @@ class nat(EventMixin):
 
 class nat_starter(EventMixin):
 
-    def __init__(self):
+    def __init__(self, firewall):
         self.listenTo(core.openflow)
+        self.firewall = firewall
 
     def _handle_ConnectionUp(self, event):
         log.debug("Connection %s" % (event.connection))
         if event.connection.dpid != 1:
             log.debug("Starting nat on %s" % (event.connection))
-            nat(event.connection)
+            nat(event.connection, self.firewall)
         else:
             log.debug("Starting learning switch on %s" % (event.connection))
             learningswitch.LearningSwitch(event.connection)
 
-def launch():
+def launch(firewall=False):
     # start the nat
-    core.registerNew(nat_starter)
+    core.registerNew(nat_starter, firewall)
