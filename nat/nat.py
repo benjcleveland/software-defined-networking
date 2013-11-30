@@ -91,15 +91,9 @@ class nat(EventMixin):
         self.eth2_ip = IPAddr('172.64.3.1')
         self.eth1_ip = IPAddr('10.0.1.1')
 
-        # todo - this only works in carp...
-        #self.mac = connection.eth_addr 
-        #print self.mac
-
         self.outmac = connection.ports[4].hw_addr
 
         self.arp_table = {} # ip to mac,port
-        self.port_map = {} # port -> ip, port
-
         self.natmap = natmap()
 
         #todo...
@@ -257,25 +251,37 @@ class nat(EventMixin):
         '''
         msg = of.ofp_packet_out()
         msg.data = event.ofp
+        msg.buffer_id = event.ofp.buffer_id
         msg.in_port = event.port
         
         if out_dir == True:
-            msg.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[dstip][0]))
-            msg.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
-            msg.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
-            msg.actions.append(of.ofp_action_tp_port.set_src(con.dstport))
-            msg.actions.append(of.ofp_action_output(port = 4))
+            msg.actions = self.get_out_actions(con, dstip)
         else:
-            mac, port, mytime = self.arp_table[con.ip]
-
-            msg.actions.append(of.ofp_action_tp_port.set_dst(con.port))
-            msg.actions.append(of.ofp_action_dl_addr.set_dst(mac))
-            msg.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
-            msg.actions.append(of.ofp_action_output(port = port))
+            msg.actions = self.get_in_actions(con)
 
         #print msg
         self.connection.send(msg)
 
+    def get_out_actions(self, con, dstip):
+        actions = []
+        actions.append(of.ofp_action_tp_port.set_src(con.dstport))
+        actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
+        actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[dstip][0]))
+        actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
+        actions.append(of.ofp_action_output(port = 4))
+
+        return actions
+    def get_in_actions(self, con):
+        actions = []
+        # actions for coming in
+        mac, port, mytime = self.arp_table[con.ip]
+
+        actions.append(of.ofp_action_tp_port.set_dst(con.port))
+        actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
+        actions.append(of.ofp_action_dl_addr.set_dst(mac))
+        actions.append(of.ofp_action_output(port = port))
+        return actions
+        
     def create_flow(self, event, packet, tcp, ip, con, data=None, out_dir=True):
         '''
         create a new flow
@@ -303,11 +309,7 @@ class nat(EventMixin):
             flow.match.nw_src = ip.srcip
 
             # actions for going out
-            flow.actions.append(of.ofp_action_tp_port.set_src(con.dstport))
-            flow.actions.append(of.ofp_action_nw_addr.set_src(self.eth2_ip))
-            flow.actions.append(of.ofp_action_dl_addr.set_dst(self.arp_table[ip.dstip][0]))
-            flow.actions.append(of.ofp_action_dl_addr.set_src(self.outmac))
-            flow.actions.append(of.ofp_action_output(port = 4))
+            flow.actions = self.get_out_actions(con, ip.dstip)
         else:
             flow.match.in_port = 4
             #flow.match.tp_src = tcp.dstport
@@ -317,12 +319,7 @@ class nat(EventMixin):
             flow.match.nw_dst = self.eth2_ip
 
             # actions for coming in
-            mac, port, mytime = self.arp_table[con.ip]
-
-            flow.actions.append(of.ofp_action_nw_addr.set_dst(con.ip))
-            flow.actions.append(of.ofp_action_tp_port.set_dst(con.port))
-            flow.actions.append(of.ofp_action_dl_addr.set_dst(mac))
-            flow.actions.append(of.ofp_action_output(port = port))
+            flow.actions = self.get_in_actions(con)
 
         print flow
         log.debug("creating out flow, %s" % event.port)
