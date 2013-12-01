@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+'''
+Ben Cleveland
+CSEP 561
+Project 3
+NAT
+'''
 
 from pox.core import core
 from pox.lib.revent import *
@@ -29,6 +35,9 @@ SIMULTANEOUS_OPEN = 'sim open!'
 SYN_ACK_RECV = 'syn ack recv'
 CONNECTING = 'connecting'
 CLOSING = 'closing'
+
+EXTERNAL_IP = '172.64.3.0/24'
+INTERNAL_IP = '10.0.1.0/24'
 
 class connection():
     def __init__(self, ip, port, dstport, state=SYN_SENT):
@@ -249,8 +258,8 @@ class nat(EventMixin):
         sends a packet out of the nat
         '''
         msg = of.ofp_packet_out()
+        #msg.buffer_id = None
         msg.data = event.ofp
-        #msg.buffer_id = event.ofp.buffer_id
         msg.in_port = event.port
         
         if out_dir == True:
@@ -289,12 +298,11 @@ class nat(EventMixin):
 
         if data != None:
             flow.data = data
-            flow.buffer_id = data.buffer_id
+            flow.buffer_id = None
             flow.in_port = event.port
 
-        #flow.match = of.ofp_match.from_packet(packet)
         flow.match.nw_proto = 6
-        flow.match.dl_type = 0x800
+        flow.match.dl_type = ethernet.IP_TYPE
 
         # set the timeout value
         flow.idle_timeout = TCP_ESTABLISHED_TIMEOUT
@@ -302,6 +310,7 @@ class nat(EventMixin):
         flow.flags |= of.OFPFF_CHECK_OVERLAP
 
         if out_dir == True:
+            #flow.match = of.ofp_match.from_packet(packet)
             flow.match.in_port = event.port
             flow.match.tp_src = tcp.srcport
             #flow.match.dl_src = packet.src
@@ -331,7 +340,7 @@ class nat(EventMixin):
         #flow.in_port = event.port
 
         flow.match.nw_proto = 6
-        flow.match.dl_type = 0x800
+        flow.match.dl_type = 0x0800
         flow.match.in_port = 4
         #flow.match.tp_src = tcp.srcport
         flow.match.tp_dst = tcp.dstport
@@ -373,11 +382,97 @@ class nat(EventMixin):
 
         return None
 
+    def nat_packet(self, event, packet, tcp, ip):
+        # we got a tcp packet!
+        log.debug("received a tcp packet! %s %s" % (ip, tcp))
+
+        # from inside
+        if event.port != 4 and ip.dstip.inNetwork(EXTERNAL_IP):
+            # see if a connection already exists or not
+            con = self.natmap.getConIp(ip.srcip, tcp.srcport)
+            if con == None:
+                # can we create a new connection?
+                # yes (syn from client) or ?
+                if tcp.SYN == True and tcp.ACK == False:
+                    # create a new connection
+                    dstport = self.map_port(tcp.srcport)
+                    if dstport == None:
+                        log.error("Out of port mappings to used... dropping packet")
+                        return
+                    con = connection(ip.srcip, tcp.srcport, dstport)
+                    self.natmap.add(con)
+                    log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
+                    time.sleep(1)
+                    self.send_packet(event, ip.dstip, con)
+                else: # no
+                    # ignore this packet
+                    log.debug("DROPPING PACKET AT START OF CONNECTION!!")
+            else:  # connection exists
+                log.debug("connection already exists, %s %s" % (con.state, event.port))
+                # make sure the connection is in the correct state and we are
+                # receiving the expected packet sequence
+                if (con.state == SYN_ACK_RECV and tcp.ACK == True and tcp.SYN == False) or (con.state == SIMULTANEOUS_OPEN and tcp.ACK == True and tcp.SYN == True):
+                        # update state     
+                        con.num_flows += 2
+                        # forward message
+                        # TODO - create the flow for this connection 
+                        # do this in both directions?
+                        # a connection has been established - create a flow
+                        con.touch()
+                        log.debug("creating flow for connection!")
+
+                        self.create_flow(event, packet, tcp, ip, con, out_dir=False)
+                        self.create_flow(event, packet, tcp, ip, con, event.ofp)
+
+                        con.state = ESTABLISHED
+                        self.natmap.add(con)
+                        log.debug("\n\n\n\n")
+                        return
+                elif con.state == ESTABLISHED:
+                    log.debug("AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
+                    #return
+                log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
+                self.send_packet(event, ip.dstip, con)
+                return
+        elif ip.dstip == self.eth2_ip:# from outside
+            # make sure this tcp packet is for us
+            con = self.natmap.getCon(tcp.dstport)
+            if con == None:
+                # silently drop the packet since the connection doesn't exist yet...
+                log.debug("No mapping for this packet from outside....")
+                return
+            else:
+                if con.state == SYN_SENT or con.state == SIMULTANEOUS_OPEN:
+                    if tcp.SYN == True and tcp.ACK == False:
+                        # support simultaneous open
+                        con.state = SIMULTANEOUS_OPEN
+                        
+                    if tcp.SYN == True and tcp.ACK == True:
+                        if con.state != SIMULTANEOUS_OPEN:
+                            con.state = SYN_ACK_RECV
+
+                    # send out the packet
+                    log.debug("sending server packet...")
+
+                    con.touch()
+                    self.natmap.add(con)
+                    mac, port, mytime = self.arp_table[con.ip]
+                    self.send_packet(event, con.ip, con, out_dir = False)
+                    log.debug("syn packet")
+                    return
+
+                else:
+
+                    mac, port, mytime = self.arp_table[con.ip]
+                    self.send_packet(event, con.ip, con, out_dir = False)
+                    log.debug("syn packet")
+                    log.debug("in unhandled state... %s" % con.state);    
+                    return
+
     def _handle_PacketIn(self, event):
         '''
         handle packets that are sent to the controller
         '''
-
         # parse the input packet
         packet = event.parse()
 
@@ -388,136 +483,21 @@ class nat(EventMixin):
 
         ip = packet.find('ipv4')
         tcp = packet.find('tcp')
-        if tcp and ip:
-            print self.arp_table
-            self.arp_table[packet.find('ipv4').srcip] = (packet.src, event.port, time.time() * ARP_TIMEOUT)
-            # we got a tcp packet!
-            log.debug("received a tcp packet! %s" % tcp)
 
-            # from inside
-            if event.port != 4 and ip.dstip.inNetwork('172.64.3.0/24'):
-                # create one if correct packet
-                con = self.natmap.getConIp(ip.srcip, tcp.srcport)
-                if con == None:
-                    # can we create a new connection?
-                    # yes (syn from client) or ?
-                    if tcp.SYN == True and tcp.ACK == False:
-                        # create a new connection
-                        dstport = self.map_port(tcp.srcport)
-                        if dstport == None:
-                            log.error("Out of port mappings to used... dropping packet")
-                        con = connection(ip.srcip, tcp.srcport, dstport)
-                        self.natmap.add(con)
-                        log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
-                        self.send_packet(event, ip.dstip, con)
-                    else: # no
-                        # ignore this packet
-                        log.debug("DROPPING PACKET AT START OF CONNECTION!!")
-               
-                else:  # connection exists
-                    log.debug("connection already exists, %s %s" % (con.state, event.port))
-                    # depending on the state we are in 
-                    # if waiting for syn ack
-                    if con.state == SYN_ACK_RECV:
-                        if tcp.ACK == True and tcp.SYN == False:
-                            # update state     
-                            con.num_flows += 2
-                            # forward message
-                            # TODO - create the flow for this connection 
-                            # do this in both directions?
-                            # a connection has been established - create a flow
-                            con.touch()
-                            log.debug("creating flow for connection!")
-
-                            #self.create_in_flow(event, packet, tcp, ip, con)
-                            self.create_flow(event, packet, tcp, ip, con, out_dir=False)
-                            self.create_flow(event, packet, tcp, ip, con, event.ofp)
-
-                            #self.send_outpacket(event, ip.dstip, con.dstport)
-                            con.state = ESTABLISHED
-                            self.natmap.add(con)
-                            log.debug("\n\n\n\n")
-                            return
-                    elif con.state == SIMULTANEOUS_OPEN:
-                        if tcp.ACK == True and tcp.SYN == True:
-                            # TODO - clean this up a little bit...
-                            con.num_flows += 2
-                            # forward message
-                            con.touch()
-                            log.debug("creating flow for connection!")
-
-                            #self.create_in_flow(event, packet, tcp, ip, con)
-                            #self.create_flow(event, packet, tcp, ip, con, event.ofp)
-
-                            self.create_flow(event, packet, tcp, ip, con, out_dir=False)
-                            self.create_flow(event, packet, tcp, ip, con, event.ofp)
-
-                            con.state = ESTABLISHED
-                            self.natmap.add(con)
-                            log.debug("\n\n\n\n")
-                            return
-                    elif con.state == ESTABLISHED:
-                        log.debug("AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
-                        #return
-                    log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
-                    self.send_packet(event, ip.dstip, con)
-                    return
-                        
-            elif ip.dstip == self.eth2_ip:# from outside
-                # make sure this tcp packet is for us
-                con = self.natmap.getCon(tcp.dstport)
-                if con == None:
-                    # silently drop the packet since the connection doesn't exist yet...
-                    log.debug("No mapping for this packet from outside....")
-                    return
-                else:
-                    if con.state == SYN_SENT or con.state == SIMULTANEOUS_OPEN:
-                        if tcp.SYN == True and tcp.ACK == False:
-                            # support simultaneous open
-                            con.touch()
-                            con.state = SIMULTANEOUS_OPEN
-                            self.natmap.add(con)
-                            mac, port, mytime = self.arp_table[con.ip]
-                            self.send_packet(event, con.ip, con, out_dir = False)
-                            
-                        if tcp.SYN == True and tcp.ACK == True:
-                            if con.state != SIMULTANEOUS_OPEN:
-                                con.state = SYN_ACK_RECV
-
-                            # send out the packet
-                            log.debug("sending server packet...")
-
-                            con.touch()
-                            self.natmap.add(con)
-                            mac, port, mytime = self.arp_table[con.ip]
-                            self.send_packet(event, con.ip, con, out_dir = False)
-                        log.debug("syn packet")
-                        return
-                    elif con.state == ESTABLISHED:
-                        log.debug("creating flow from server established!!")
-                        # make a flow...
-
-                        #con.touch()
-                        #con.num_flows += 1
-                        #self.natmap.add(con)
-
-                        # TODO create a new connection in this case...
-                        # I feel like more than just this should be done...
-                        # if we setup our flows right this should not be required
-                        # this seems to work, so we could get away with removing this
-                        #self.create_in_flow2(event, packet, tcp, ip, con)
-                        #mac, port, mytime = self.arp_table[con.ip]
-                        #self.send_inpacket(event, con.ip, con.port, mac, port)
-                    else:
-                        log.debug("in unhandled state...");    
-                        return
+        if ip:
+            # update the arp table
+            self.arp_table[ip.srcip] = (packet.src, event.port, time.time() * ARP_TIMEOUT)
 
         if ip and ip.dstip.inNetwork('10.0.1.0/24') == True:
             # flood the message to the internal clients
             log.debug("flooding packet on client network")
-            self.flood_packet(event)
+            return self.flood_packet(event)
 
-        # ignore UDP messages....
+        if tcp and ip:
+            # see if we can nat this packet
+            return self.nat_packet(event, packet, tcp, ip)
+
+        # ignore UDP and any other messages....
 
     def flood_packet(self, event):
         '''
@@ -547,7 +527,6 @@ class nat(EventMixin):
 
         if con != None:
             con.num_flows -= 1
-            print con.num_flows
             # if we can remove this connection
             if con.num_flows == 0:
                 self.natmap.remove(con)
