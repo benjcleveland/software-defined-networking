@@ -112,7 +112,7 @@ class nat(EventMixin):
         self.send_arp(IPAddr('172.64.3.21'))
         self.send_arp(IPAddr('172.64.3.22'))
 
-        #core.callDelayed(1, self.cleanupConnections)
+        core.callDelayed(1, self.cleanupConnections)
 
     def cleanupConnections(self):
         '''
@@ -174,29 +174,7 @@ class nat(EventMixin):
                     # we can respond to the ARP request
                     log.debug("responding to ARP request...")
 
-                    # create the arp response packet
-                    arp_res = arp()
-                    arp_res.hwtype = arp_req.hwtype
-                    arp_res.prototype = arp_req.prototype
-                    arp_res.hwlen = arp_req.hwlen
-                    arp_res.protolen = arp_req.protolen
-                    arp_res.opcode = arp.REPLY
-                    arp_res.hwdst = arp_req.hwsrc
-                    arp_res.protodst = arp_req.protosrc
-                    arp_res.protosrc = arp_req.protodst
-                    arp_res.hwsrc = self.arp_table[arp_req.protodst][1]
-
-                    # create an ethernet package that contains the arp response we created above
-                    e = ethernet(type=packet.type, src=self.outmac, dst=arp_req.hwsrc)
-                    e.set_payload(arp_res)
-                    log.debug("%i %i answering ARP for %s" % (event.connection.dpid, event.port, str(arp_res.protosrc)))
-
-                    # send the ARP response
-                    msg = of.ofp_packet_out()
-                    msg.data = e.pack()
-                    msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
-                    msg.in_port = event.port
-                    event.connection.send(msg)
+                    self.send_arpResponse(arp_req, event, packet, self.arp_table[arp_req.protodst][0])
                     return
 
                 elif arp_req.protodst == IPAddr('10.0.1.1'):
@@ -402,7 +380,6 @@ class nat(EventMixin):
                     con = connection(ip.srcip, tcp.srcport, dstport)
                     self.natmap.add(con)
                     log.debug("creating a new connection %s %s %s" % (ip.srcip, tcp.srcport, dstport))
-                    time.sleep(1)
                     self.send_packet(event, ip.dstip, con)
                 else: # no
                     # ignore this packet
@@ -451,6 +428,7 @@ class nat(EventMixin):
                         if con.state != SIMULTANEOUS_OPEN:
                             con.state = SYN_ACK_RECV
 
+                    # TODO - handle RST?
                     # send out the packet
                     log.debug("sending server packet...")
 
@@ -462,10 +440,6 @@ class nat(EventMixin):
                     return
 
                 else:
-
-                    mac, port, mytime = self.arp_table[con.ip]
-                    self.send_packet(event, con.ip, con, out_dir = False)
-                    log.debug("syn packet")
                     log.debug("in unhandled state... %s" % con.state);    
                     return
 
