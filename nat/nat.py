@@ -13,6 +13,7 @@ import pox.openflow.libopenflow_01 as of
 from pox.lib.addresses import IPAddr
 from pox.lib.packet.ethernet import ethernet
 from pox.lib.packet.ethernet import ETHER_BROADCAST
+from pox.lib.packet import ipv4
 from threading import Lock
 
 from learning_switch import learningswitch
@@ -34,6 +35,7 @@ ESTABLISHED = 'established'
 SYN_SENT = 'syn_sent'
 SIMULTANEOUS_OPEN = 'sim open!'
 SYN_ACK_RECV = 'syn ack recv'
+REFUSED = 'refused'
 
 EXTERNAL_IP = '172.64.3.0/24'
 INTERNAL_IP = '10.0.1.0/24'
@@ -101,7 +103,7 @@ class nat(EventMixin):
     '''
     The NAT itself!
     '''
-    def __init__(self, connection):
+    def __init__(self, connection, firewall):
         # add the nat to this switch
         self.connection = connection
         self.listenTo(connection)
@@ -112,6 +114,8 @@ class nat(EventMixin):
 
         self.arp_table = {} # ip to mac,port
         self.natmap = natmap()
+
+        self.firewall = firewall
         
         #todo...
         self.send_arp(IPAddr('172.64.3.21'))
@@ -290,7 +294,7 @@ class nat(EventMixin):
             flow.buffer_id = None
             flow.in_port = event.port
 
-        flow.match.nw_proto = 6
+        flow.match.nw_proto = ipv4.TCP_PROTOCOL
         flow.match.dl_type = ethernet.IP_TYPE
 
         # set the timeout value
@@ -304,15 +308,16 @@ class nat(EventMixin):
             flow.match.tp_src = tcp.srcport
             #flow.match.dl_src = packet.src
             flow.match.nw_src = ip.srcip
+            if self.firewall != None:
+                # match the destination IP so we kick any new connections back to the
+                # controller - mainly to make sure the firewall works properly 
+                flow.match.nw_dst = ip.dstip
 
             # actions for going out
             flow.actions = self.get_out_actions(con, ip.dstip)
         else:
             flow.match.in_port = 4
-            #flow.match.tp_src = tcp.dstport
             flow.match.tp_dst = con.dstport
-            #flow.match.dl_src = src_mac
-            #flow.match.nw_src = ip.dstip
             flow.match.nw_dst = self.eth2_ip
 
             # actions for coming in
@@ -390,8 +395,12 @@ class nat(EventMixin):
                         self.natmap.add(con)
                         log.debug("\n\n\n\n")
                         return
-                elif con.state == ESTABLISHED:
-                    log.debug("AHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH")
+                elif con.state == REFUSED:
+                    # remove this connection so it can be reused
+                    log.debug("removing connection because of connection refused")
+                    sef.natmap.remove(con)
+                else:
+                    log.debug("forwarding packet...")
 
                 log.debug("sending packet out connection %s %s %s" % (ip.srcip, tcp.srcport, con.dstport))
                 # forward the packet
@@ -413,6 +422,10 @@ class nat(EventMixin):
                     if tcp.SYN == True and tcp.ACK == True:
                         if con.state != SIMULTANEOUS_OPEN:
                             con.state = SYN_ACK_RECV
+
+                    if tcp.ACK == True and tcp.RST == True:
+                        # the connection was refused...
+                        con.state = REFUSED
 
                     # TODO - handle RST?
                     # send out the packet
@@ -510,7 +523,7 @@ class nat_starter(EventMixin):
         log.debug("Connection %s" % (event.connection))
         if event.connection.dpid != 1:
             log.debug("Starting nat on %s" % (event.connection))
-            nat(event.connection)
+            nat(event.connection, self.firewall)
         else:
             log.debug("Starting learning switch on %s" % (event.connection))
             learningswitch.LearningSwitch(event.connection)
