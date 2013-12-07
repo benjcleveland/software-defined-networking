@@ -320,7 +320,7 @@ class nat(EventMixin):
             flow.actions = self.get_in_actions(con)
 
         #print flow
-        log.debug("creating out flow, %s" % event.port)
+        log.debug("creating flow, %s" % event.port)
         self.connection.send(flow)
 
     def map_port(self, port):
