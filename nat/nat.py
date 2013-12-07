@@ -330,14 +330,14 @@ class nat(EventMixin):
         used_ports = self.natmap.getPorts()
 
         dstport = port + 1
-        if dstport < 1024 or dstport >= 65534:
+        if dstport < 1024 or dstport >= 65535:
             dstport = 1024
 
         for count in range(2):
             if dstport not in used_ports:
                 return dstport
             dstport += 1
-            if dstport >= 65534:
+            if dstport >= 65535:
                 dstport = 1024
 
         return None
