@@ -301,10 +301,8 @@ class nat(EventMixin):
         flow.flags |= of.OFPFF_CHECK_OVERLAP
 
         if out_dir == True:
-            #flow.match = of.ofp_match.from_packet(packet)
             flow.match.in_port = event.port
             flow.match.tp_src = tcp.srcport
-            #flow.match.dl_src = packet.src
             flow.match.nw_src = ip.srcip
             if self.firewall != None:
                 # match the destination IP so we kick any new connections back to the
@@ -321,7 +319,7 @@ class nat(EventMixin):
             # actions for coming in
             flow.actions = self.get_in_actions(con)
 
-        print flow
+        #print flow
         log.debug("creating out flow, %s" % event.port)
         self.connection.send(flow)
 
