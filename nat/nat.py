@@ -457,7 +457,7 @@ class nat(EventMixin):
             # update the arp table
             self.arp_table[ip.srcip] = (packet.src, event.port, time.time() * ARP_TIMEOUT)
 
-        if ip and ip.dstip.inNetwork('10.0.1.0/24') == True:
+        if ip and ip.dstip.inNetwork('10.0.1.0/24') == True and ip.srcip.inNetwork('10.0.1.0/24') == True:
             # flood the message to the internal clients
             log.debug("flooding packet on client network")
             return self.flood_packet(event)
